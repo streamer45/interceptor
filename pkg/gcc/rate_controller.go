@@ -166,3 +166,9 @@ func (c *rateController) decrease() int {
 	c.lastUpdate = c.now()
 	return target
 }
+
+func (c *rateController) setTargetBitrate(rate int) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.target = rate
+}

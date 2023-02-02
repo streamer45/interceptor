@@ -101,3 +101,7 @@ func (d *delayController) Close() error {
 
 	return nil
 }
+
+func (d *delayController) setTargetBitrate(rate int) {
+	d.rateController.setTargetBitrate(rate)
+}

@@ -91,6 +91,18 @@ func TestSendSideBWE(t *testing.T) {
 
 	// Sending a stream with zero loss and no RTT should increase estimate
 	require.Less(t, latestBitrate, bwe.GetTargetBitrate())
+
+	t.Run("SetTargetBitrate", func(t *testing.T) {
+		newRate := bwe.GetTargetBitrate() * 2
+		bwe.SetTargetBitrate(newRate)
+		require.Equal(t, newRate, bwe.GetTargetBitrate())
+		bwe.lossController.lock.Lock()
+		defer bwe.lossController.lock.Unlock()
+		require.Equal(t, newRate, bwe.lossController.bitrate)
+		bwe.delayController.rateController.lock.Lock()
+		defer bwe.delayController.rateController.lock.Unlock()
+		require.Equal(t, newRate, bwe.delayController.rateController.target)
+	})
 }
 
 func TestSendSideBWE_ErrorOnWriteRTCPAtClosedState(t *testing.T) {
