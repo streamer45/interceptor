@@ -285,3 +285,15 @@ func (e *SendSideBWE) onDelayUpdate(delayStats DelayStats) {
 		DelayStats: delayStats,
 	}
 }
+
+// SetTargetBitrate dynamically sets the current target bitrate to the given
+// value in bits per second
+func (e *SendSideBWE) SetTargetBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
+	e.latestBitrate = rate
+	e.delayController.setTargetBitrate(rate)
+	e.lossController.setTargetBitrate(rate)
+	e.pacer.SetTargetBitrate(rate)
+}

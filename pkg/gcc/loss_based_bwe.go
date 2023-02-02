@@ -107,3 +107,9 @@ func (e *lossBasedBandwidthEstimator) updateLossEstimate(results []cc.Acknowledg
 func (e *lossBasedBandwidthEstimator) average(delta time.Duration, prev, sample float64) float64 {
 	return sample + math.Exp(-float64(delta.Milliseconds())/200.0)*(prev-sample)
 }
+
+func (e *lossBasedBandwidthEstimator) setTargetBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	e.bitrate = rate
+}
