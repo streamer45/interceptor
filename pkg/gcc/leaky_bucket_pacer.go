@@ -15,7 +15,7 @@ var errLeakyBucketPacerPoolCastFailed = errors.New("failed to access leaky bucke
 
 type item struct {
 	header     *rtp.Header
-	payload    *[]byte
+	payload    []byte
 	size       int
 	attributes interceptor.Attributes
 }
@@ -36,8 +36,12 @@ type LeakyBucketPacer struct {
 
 	ssrcToWriter map[uint32]interceptor.RTPWriter
 	writerLock   sync.RWMutex
+}
 
-	pool *sync.Pool
+var pacerBufPool = &sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 1460)
+	},
 }
 
 // NewLeakyBucketPacer initializes a new LeakyBucketPacer
@@ -51,13 +55,6 @@ func NewLeakyBucketPacer(initialBitrate int) *LeakyBucketPacer {
 		queue:          list.New(),
 		done:           make(chan struct{}),
 		ssrcToWriter:   map[uint32]interceptor.RTPWriter{},
-		pool:           &sync.Pool{},
-	}
-	p.pool = &sync.Pool{
-		New: func() interface{} {
-			b := make([]byte, 1460)
-			return &b
-		},
 	}
 
 	go p.Run()
@@ -89,12 +86,12 @@ func (p *LeakyBucketPacer) getTargetBitrate() int {
 // Write sends a packet with header and payload the a previously registered
 // stream.
 func (p *LeakyBucketPacer) Write(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
-	buf, ok := p.pool.Get().(*[]byte)
+	buf, ok := pacerBufPool.Get().([]byte)
 	if !ok {
 		return 0, errLeakyBucketPacerPoolCastFailed
 	}
 
-	copy(*buf, payload)
+	copy(buf, payload)
 	hdr := header.Clone()
 
 	p.qLock.Lock()
@@ -136,19 +133,19 @@ func (p *LeakyBucketPacer) Run() {
 				p.writerLock.RUnlock()
 				if !ok {
 					p.log.Warnf("no writer found for ssrc: %v", next.header.SSRC)
-					p.pool.Put(next.payload)
+					pacerBufPool.Put(next.payload)
 					p.qLock.Lock()
 					continue
 				}
 
-				n, err := writer.Write(next.header, (*next.payload)[:next.size], next.attributes)
+				n, err := writer.Write(next.header, (next.payload)[:next.size], next.attributes)
 				if err != nil {
 					p.log.Errorf("failed to write packet: %v", err)
 				}
 				lastSent = now
 				budget -= n
 
-				p.pool.Put(next.payload)
+				pacerBufPool.Put(next.payload)
 				p.qLock.Lock()
 			}
 			p.qLock.Unlock()
