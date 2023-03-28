@@ -105,3 +105,11 @@ func (d *delayController) Close() error {
 func (d *delayController) setTargetBitrate(rate int) {
 	d.rateController.setTargetBitrate(rate)
 }
+
+func (d *delayController) setMinBitrate(rate int) {
+	d.rateController.setMinBitrate(rate)
+}
+
+func (d *delayController) setMaxBitrate(rate int) {
+	d.rateController.setMaxBitrate(rate)
+}

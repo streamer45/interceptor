@@ -298,3 +298,25 @@ func (e *SendSideBWE) SetTargetBitrate(rate int) {
 	e.lossController.setTargetBitrate(rate)
 	e.pacer.SetTargetBitrate(rate)
 }
+
+// SetMinBitrate dynamically sets the minimum bitrate to the given value
+// in bits per second.
+func (e *SendSideBWE) SetMinBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
+	e.minBitrate = rate
+	e.delayController.setMinBitrate(rate)
+	e.lossController.setMinBitrate(rate)
+}
+
+// SetMaxBitrate dynamically sets the maximum bitrate to the given value
+// in bits per second.
+func (e *SendSideBWE) SetMaxBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
+	e.maxBitrate = rate
+	e.delayController.setMaxBitrate(rate)
+	e.lossController.setMaxBitrate(rate)
+}

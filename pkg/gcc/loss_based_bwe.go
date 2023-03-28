@@ -115,3 +115,15 @@ func (e *lossBasedBandwidthEstimator) setTargetBitrate(rate int) {
 	defer e.lock.Unlock()
 	e.bitrate = rate
 }
+
+func (e *lossBasedBandwidthEstimator) setMinBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	e.minBitrate = rate
+}
+
+func (e *lossBasedBandwidthEstimator) setMaxBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	e.maxBitrate = rate
+}
