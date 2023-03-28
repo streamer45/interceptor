@@ -273,13 +273,13 @@ func (e *SendSideBWE) onDelayUpdate(delayStats DelayStats) {
 		e.pacer.SetTargetBitrate(e.latestBitrate)
 	}
 
-	if bitrateChanged && e.onTargetBitrateChange != nil {
-		go e.onTargetBitrateChange(bitrate)
-	}
-
 	e.latestStats = Stats{
 		LossStats:  lossStats,
 		DelayStats: delayStats,
+	}
+
+	if bitrateChanged && e.onTargetBitrateChange != nil {
+		go e.onTargetBitrateChange(bitrate)
 	}
 }
 

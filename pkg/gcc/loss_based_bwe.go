@@ -60,7 +60,6 @@ func (e *lossBasedBandwidthEstimator) getEstimate(wantedRate int) LossStats {
 	if e.bitrate <= 0 {
 		e.bitrate = clampInt(wantedRate, e.minBitrate, e.maxBitrate)
 	}
-	e.bitrate = minInt(wantedRate, e.bitrate)
 
 	return LossStats{
 		TargetBitrate: e.bitrate,
