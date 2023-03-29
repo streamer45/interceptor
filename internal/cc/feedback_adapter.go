@@ -24,7 +24,6 @@ var (
 // FeedbackAdapter converts incoming RTCP Packets (TWCC and RFC8888) into Acknowledgments.
 // Acknowledgments are the common format that Congestion Controllers in Pion understand.
 type FeedbackAdapter struct {
-	lock    sync.Mutex
 	history *feedbackHistory
 }
 
@@ -33,10 +32,7 @@ func NewFeedbackAdapter() *FeedbackAdapter {
 	return &FeedbackAdapter{history: newFeedbackHistory(250)}
 }
 
-func (f *FeedbackAdapter) onSentRFC8888(ts time.Time, header *rtp.Header, size int) error {
-	f.lock.Lock()
-	defer f.lock.Unlock()
-
+func (f *FeedbackAdapter) OnSentRFC8888(ts time.Time, header *rtp.Header, size int) error {
 	f.history.add(Acknowledgment{
 		SequenceNumber: header.SequenceNumber,
 		SSRC:           header.SSRC,
@@ -48,7 +44,7 @@ func (f *FeedbackAdapter) onSentRFC8888(ts time.Time, header *rtp.Header, size i
 	return nil
 }
 
-func (f *FeedbackAdapter) onSentTWCC(ts time.Time, extID uint8, header *rtp.Header, size int) error {
+func (f *FeedbackAdapter) OnSentTWCC(ts time.Time, extID uint8, header *rtp.Header, size int) error {
 	sequenceNumber := header.GetExtension(extID)
 	var tccExt rtp.TransportCCExtension
 	err := tccExt.Unmarshal(sequenceNumber)
@@ -56,8 +52,6 @@ func (f *FeedbackAdapter) onSentTWCC(ts time.Time, extID uint8, header *rtp.Head
 		return errMissingTWCCExtension
 	}
 
-	f.lock.Lock()
-	defer f.lock.Unlock()
 	f.history.add(Acknowledgment{
 		SequenceNumber: tccExt.TransportSequence,
 		SSRC:           0,
@@ -75,10 +69,10 @@ func (f *FeedbackAdapter) OnSent(ts time.Time, header *rtp.Header, size int, att
 	hdrExtensionID := attributes.Get(TwccExtensionAttributesKey)
 	id, ok := hdrExtensionID.(uint8)
 	if ok && hdrExtensionID != 0 {
-		return f.onSentTWCC(ts, id, header, size)
+		return f.OnSentTWCC(ts, id, header, size)
 	}
 
-	return f.onSentRFC8888(ts, header, size)
+	return f.OnSentRFC8888(ts, header, size)
 }
 
 func (f *FeedbackAdapter) unpackRunLengthChunk(start uint16, refTime time.Time, chunk *rtcp.RunLengthChunk, deltas []*rtcp.RecvDelta) (consumedDeltas int, nextRef time.Time, acks []Acknowledgment, err error) {
@@ -137,9 +131,6 @@ func (f *FeedbackAdapter) unpackStatusVectorChunk(start uint16, refTime time.Tim
 // OnTransportCCFeedback converts incoming TWCC RTCP packet feedback to
 // Acknowledgments.
 func (f *FeedbackAdapter) OnTransportCCFeedback(ts time.Time, feedback *rtcp.TransportLayerCC) ([]Acknowledgment, error) {
-	f.lock.Lock()
-	defer f.lock.Unlock()
-
 	result := []Acknowledgment{}
 	index := feedback.BaseSequenceNumber
 	refTime := time.Time{}.Add(time.Duration(feedback.ReferenceTime) * 64 * time.Millisecond)
@@ -176,9 +167,6 @@ func (f *FeedbackAdapter) OnTransportCCFeedback(ts time.Time, feedback *rtcp.Tra
 // OnRFC8888Feedback converts incoming Congestion Control Feedback RTCP packet
 // to Acknowledgments.
 func (f *FeedbackAdapter) OnRFC8888Feedback(ts time.Time, feedback *rtcp.CCFeedbackReport) []Acknowledgment {
-	f.lock.Lock()
-	defer f.lock.Unlock()
-
 	result := []Acknowledgment{}
 	referenceTime := ntp.ToTime(uint64(feedback.ReportTimestamp) << 16)
 	for _, rb := range feedback.ReportBlocks {
@@ -207,6 +195,7 @@ type feedbackHistoryKey struct {
 }
 
 type feedbackHistory struct {
+	lock      sync.RWMutex
 	size      int
 	evictList *list.List
 	items     map[feedbackHistoryKey]*list.Element
@@ -221,7 +210,9 @@ func newFeedbackHistory(size int) *feedbackHistory {
 }
 
 func (f *feedbackHistory) get(key feedbackHistoryKey) (Acknowledgment, bool) {
+	f.lock.RLock()
 	ent, ok := f.items[key]
+	f.lock.RUnlock()
 	if ok {
 		if ack, ok := ent.Value.(Acknowledgment); ok {
 			return ack, true
@@ -231,6 +222,9 @@ func (f *feedbackHistory) get(key feedbackHistoryKey) (Acknowledgment, bool) {
 }
 
 func (f *feedbackHistory) add(ack Acknowledgment) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+
 	key := feedbackHistoryKey{
 		ssrc:           ack.SSRC,
 		sequenceNumber: ack.SequenceNumber,
