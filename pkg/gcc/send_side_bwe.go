@@ -197,8 +197,10 @@ func (e *SendSideBWE) WriteRTCP(pkts []rtcp.Packet, attributes interceptor.Attri
 		}
 
 		feedbackMinRTT := time.Duration(math.MaxInt)
+		packetsLost := 0
 		for _, ack := range acks {
 			if ack.Arrival.IsZero() {
+				packetsLost++
 				continue
 			}
 			pendingTime := feedbackSentTime.Sub(ack.Arrival)
@@ -209,7 +211,9 @@ func (e *SendSideBWE) WriteRTCP(pkts []rtcp.Packet, attributes interceptor.Attri
 			e.delayController.updateRTT(feedbackMinRTT)
 		}
 
-		e.lossController.updateLossEstimate(acks)
+		if len(acks) != 0 {
+			e.lossController.updateLossEstimate(now, float64(packetsLost)/float64(len(acks)))
+		}
 		e.delayController.updateDelayEstimate(acks)
 	}
 	return nil
