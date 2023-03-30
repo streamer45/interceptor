@@ -30,9 +30,10 @@ type LeakyBucketPacer struct {
 
 	pacingInterval time.Duration
 
-	qLock sync.RWMutex
-	queue *list.List
-	done  chan struct{}
+	qLock       sync.RWMutex
+	queue       *list.List
+	done        chan struct{}
+	disableCopy bool
 
 	ssrcToWriter map[uint32]interceptor.RTPWriter
 	writerLock   sync.RWMutex
@@ -44,8 +45,20 @@ var pacerBufPool = &sync.Pool{
 	},
 }
 
+// PacerOption configures a pacer
+type PacerOption func(*LeakyBucketPacer) error
+
+// PacerDisableCopy bypasses copy of underlying packets.
+// It should be used when you are not re-using underlying buffers of packets that have been written
+func PacerDisableCopy() PacerOption {
+	return func(p *LeakyBucketPacer) error {
+		p.disableCopy = true
+		return nil
+	}
+}
+
 // NewLeakyBucketPacer initializes a new LeakyBucketPacer
-func NewLeakyBucketPacer(initialBitrate int) *LeakyBucketPacer {
+func NewLeakyBucketPacer(initialBitrate int, opts ...PacerOption) (*LeakyBucketPacer, error) {
 	p := &LeakyBucketPacer{
 		log:            logging.NewDefaultLoggerFactory().NewLogger("pacer"),
 		f:              1.5,
@@ -57,8 +70,14 @@ func NewLeakyBucketPacer(initialBitrate int) *LeakyBucketPacer {
 		ssrcToWriter:   map[uint32]interceptor.RTPWriter{},
 	}
 
+	for _, opt := range opts {
+		if err := opt(p); err != nil {
+			return nil, err
+		}
+	}
+
 	go p.Run()
-	return p
+	return p, nil
 }
 
 // AddStream adds a new stream and its corresponding writer to the pacer
@@ -86,12 +105,18 @@ func (p *LeakyBucketPacer) getTargetBitrate() int {
 // Write sends a packet with header and payload the a previously registered
 // stream.
 func (p *LeakyBucketPacer) Write(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
-	buf, ok := pacerBufPool.Get().([]byte)
-	if !ok {
-		return 0, errLeakyBucketPacerPoolCastFailed
+	var buf []byte
+	if p.disableCopy {
+		buf = payload
+	} else {
+		var ok bool
+		buf, ok = pacerBufPool.Get().([]byte)
+		if !ok {
+			return 0, errLeakyBucketPacerPoolCastFailed
+		}
+		copy(buf, payload)
 	}
 
-	copy(buf, payload)
 	hdr := header.Clone()
 
 	p.qLock.Lock()
@@ -133,7 +158,9 @@ func (p *LeakyBucketPacer) Run() {
 				p.writerLock.RUnlock()
 				if !ok {
 					p.log.Warnf("no writer found for ssrc: %v", next.header.SSRC)
-					pacerBufPool.Put(next.payload)
+					if !p.disableCopy {
+						pacerBufPool.Put(next.payload)
+					}
 					p.qLock.Lock()
 					continue
 				}
@@ -145,7 +172,9 @@ func (p *LeakyBucketPacer) Run() {
 				lastSent = now
 				budget -= n
 
-				pacerBufPool.Put(next.payload)
+				if !p.disableCopy {
+					pacerBufPool.Put(next.payload)
+				}
 				p.qLock.Lock()
 			}
 			p.qLock.Unlock()

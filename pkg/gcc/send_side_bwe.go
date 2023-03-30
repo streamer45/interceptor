@@ -112,7 +112,11 @@ func NewSendSideBWE(opts ...Option) (*SendSideBWE, error) {
 		}
 	}
 	if e.pacer == nil {
-		e.pacer = NewLeakyBucketPacer(e.latestBitrate)
+		pacer, err := NewLeakyBucketPacer(e.latestBitrate)
+		if err != nil {
+			return nil, err
+		}
+		e.pacer = pacer
 	}
 	e.lossController = newLossBasedBWE(lossControllerConfig{
 		initialBitrate: e.latestBitrate,
