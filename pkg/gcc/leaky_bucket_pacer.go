@@ -1,7 +1,6 @@
 package gcc
 
 import (
-	"container/list"
 	"errors"
 	"sync"
 	"time"
@@ -30,8 +29,7 @@ type LeakyBucketPacer struct {
 
 	pacingInterval time.Duration
 
-	qLock       sync.RWMutex
-	queue       *list.List
+	queue       chan *item
 	done        chan struct{}
 	disableCopy bool
 
@@ -64,8 +62,7 @@ func NewLeakyBucketPacer(initialBitrate int, opts ...PacerOption) (*LeakyBucketP
 		f:              1.5,
 		targetBitrate:  initialBitrate,
 		pacingInterval: 5 * time.Millisecond,
-		qLock:          sync.RWMutex{},
-		queue:          list.New(),
+		queue:          make(chan *item, 10000),
 		done:           make(chan struct{}),
 		ssrcToWriter:   map[uint32]interceptor.RTPWriter{},
 	}
@@ -119,14 +116,16 @@ func (p *LeakyBucketPacer) Write(header *rtp.Header, payload []byte, attributes 
 
 	hdr := header.Clone()
 
-	p.qLock.Lock()
-	p.queue.PushBack(&item{
+	select {
+	case p.queue <- &item{
 		header:     &hdr,
 		payload:    buf,
 		size:       len(payload),
 		attributes: attributes,
-	})
-	p.qLock.Unlock()
+	}:
+	default:
+		p.log.Warnf("failed to add item: queue is full")
+	}
 
 	return header.MarshalSize() + len(payload), nil
 }
@@ -143,13 +142,18 @@ func (p *LeakyBucketPacer) Run() {
 			return
 		case now := <-ticker.C:
 			budget := int(float64(now.Sub(lastSent).Milliseconds()) * float64(p.getTargetBitrate()) / 8000.0)
-			p.qLock.Lock()
-			for p.queue.Len() != 0 && budget > 0 {
-				p.log.Infof("budget=%v, len(queue)=%v, targetBitrate=%v", budget, p.queue.Len(), p.getTargetBitrate())
-				next, ok := p.queue.Remove(p.queue.Front()).(*item)
-				p.qLock.Unlock()
-				if !ok {
-					p.log.Warnf("failed to access leaky bucket pacer queue, cast failed")
+			for len(p.queue) != 0 && budget > 0 {
+				p.log.Infof("budget=%v, len(queue)=%v, targetBitrate=%v", budget, len(p.queue), p.getTargetBitrate())
+
+				var next *item
+				var ok bool
+				select {
+				case next, ok = <-p.queue:
+					if !ok {
+						continue
+					}
+				default:
+					p.log.Warnf("failed to get item from queue")
 					continue
 				}
 
@@ -161,7 +165,6 @@ func (p *LeakyBucketPacer) Run() {
 					if !p.disableCopy {
 						pacerBufPool.Put(next.payload)
 					}
-					p.qLock.Lock()
 					continue
 				}
 
@@ -175,9 +178,7 @@ func (p *LeakyBucketPacer) Run() {
 				if !p.disableCopy {
 					pacerBufPool.Put(next.payload)
 				}
-				p.qLock.Lock()
 			}
-			p.qLock.Unlock()
 		}
 	}
 }
