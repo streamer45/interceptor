@@ -33,8 +33,7 @@ type LeakyBucketPacer struct {
 	done        chan struct{}
 	disableCopy bool
 
-	ssrcToWriter map[uint32]interceptor.RTPWriter
-	writerLock   sync.RWMutex
+	ssrcToWriter sync.Map
 }
 
 var pacerBufPool = &sync.Pool{
@@ -64,7 +63,6 @@ func NewLeakyBucketPacer(initialBitrate int, opts ...PacerOption) (*LeakyBucketP
 		pacingInterval: 5 * time.Millisecond,
 		queue:          make(chan *item, 10000),
 		done:           make(chan struct{}),
-		ssrcToWriter:   map[uint32]interceptor.RTPWriter{},
 	}
 
 	for _, opt := range opts {
@@ -79,9 +77,7 @@ func NewLeakyBucketPacer(initialBitrate int, opts ...PacerOption) (*LeakyBucketP
 
 // AddStream adds a new stream and its corresponding writer to the pacer
 func (p *LeakyBucketPacer) AddStream(ssrc uint32, writer interceptor.RTPWriter) {
-	p.writerLock.Lock()
-	defer p.writerLock.Unlock()
-	p.ssrcToWriter[ssrc] = writer
+	p.ssrcToWriter.Store(ssrc, writer)
 }
 
 // SetTargetBitrate updates the target bitrate at which the pacer is allowed to
@@ -157,9 +153,7 @@ func (p *LeakyBucketPacer) Run() {
 					continue
 				}
 
-				p.writerLock.RLock()
-				writer, ok := p.ssrcToWriter[next.header.SSRC]
-				p.writerLock.RUnlock()
+				entry, ok := p.ssrcToWriter.Load(next.header.SSRC)
 				if !ok {
 					p.log.Warnf("no writer found for ssrc: %v", next.header.SSRC)
 					if !p.disableCopy {
@@ -167,6 +161,7 @@ func (p *LeakyBucketPacer) Run() {
 					}
 					continue
 				}
+				writer := entry.(interceptor.RTPWriter)
 
 				n, err := writer.Write(next.header, (next.payload)[:next.size], next.attributes)
 				if err != nil {
