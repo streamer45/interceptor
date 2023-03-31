@@ -146,21 +146,21 @@ func (e *SendSideBWE) AddStream(info *interceptor.StreamInfo, writer interceptor
 	}
 
 	e.pacer.AddStream(info.SSRC, interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
-		if hdrExtID != 0 {
-			if attributes == nil {
-				attributes = make(interceptor.Attributes)
-			}
-			attributes.Set(cc.TwccExtensionAttributesKey, hdrExtID)
-		}
-
 		now, ok := attributes.Get("now").(time.Time)
 		if !ok {
 			now = time.Now()
 		}
 
-		if err := e.feedbackAdapter.OnSent(now, header, len(payload), attributes); err != nil {
-			return 0, err
+		if hdrExtID != 0 {
+			if err := e.feedbackAdapter.OnSentTWCC(now, hdrExtID, header, len(payload)); err != nil {
+				return 0, err
+			}
+		} else {
+			if err := e.feedbackAdapter.OnSent(now, header, len(payload), attributes); err != nil {
+				return 0, err
+			}
 		}
+
 		return writer.Write(header, payload, attributes)
 	}))
 	return e.pacer
