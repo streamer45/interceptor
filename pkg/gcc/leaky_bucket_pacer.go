@@ -14,7 +14,7 @@ var errLeakyBucketPacerPoolCastFailed = errors.New("failed to access leaky bucke
 var errLeakyBucketPacerQueueItemsPoolCastFailed = errors.New("failed to access leaky bucket pacer queue items pool, cast failed")
 var errLeakyBucketPacerQueueFull = errors.New("failed to add item to queue: channel is full")
 
-const pacerQueueMaxSize = 5000
+const pacerQueueMaxSize = 10000
 
 type item struct {
 	header     *rtp.Header
