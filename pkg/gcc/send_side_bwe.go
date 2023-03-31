@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	transportCCURI = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
-	latestBitrate  = 10_000
-	minBitrate     = 5_000
-	maxBitrate     = 50_000_000
+	transportCCURI       = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+	latestBitrate        = 10_000
+	minBitrate           = 5_000
+	maxBitrate           = 50_000_000
+	timeNowAttributesKey = iota + 1
 )
 
 // ErrSendSideBWEClosed is raised when SendSideBWE.WriteRTCP is called after SendSideBWE.Close
@@ -146,17 +147,18 @@ func (e *SendSideBWE) AddStream(info *interceptor.StreamInfo, writer interceptor
 	}
 
 	e.pacer.AddStream(info.SSRC, interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
-		now, ok := attributes.Get("now").(time.Time)
+		now, ok := attributes.Get(timeNowAttributesKey).(*time.Time)
 		if !ok {
-			now = time.Now()
+			now = &time.Time{}
+			*now = time.Now()
 		}
 
 		if hdrExtID != 0 {
-			if err := e.feedbackAdapter.OnSentTWCC(now, hdrExtID, header, len(payload)); err != nil {
+			if err := e.feedbackAdapter.OnSentTWCC(*now, hdrExtID, header, len(payload)); err != nil {
 				return 0, err
 			}
 		} else {
-			if err := e.feedbackAdapter.OnSent(now, header, len(payload), attributes); err != nil {
+			if err := e.feedbackAdapter.OnSent(*now, header, len(payload), attributes); err != nil {
 				return 0, err
 			}
 		}

@@ -11,8 +11,10 @@ import (
 )
 
 var errLeakyBucketPacerPoolCastFailed = errors.New("failed to access leaky bucket pacer pool, cast failed")
+var errLeakyBucketPacerQueueItemsPoolCastFailed = errors.New("failed to access leaky bucket pacer queue items pool, cast failed")
+var errLeakyBucketPacerQueueFull = errors.New("failed to add item to queue: channel is full")
 
-const pacerQueueMaxSize = 10000
+const pacerQueueMaxSize = 5000
 
 type item struct {
 	header     *rtp.Header
@@ -41,6 +43,12 @@ type LeakyBucketPacer struct {
 var pacerBufPool = &sync.Pool{
 	New: func() interface{} {
 		return make([]byte, 1460)
+	},
+}
+
+var pacerItemsPool = &sync.Pool{
+	New: func() interface{} {
+		return &item{}
 	},
 }
 
@@ -114,15 +122,19 @@ func (p *LeakyBucketPacer) Write(header *rtp.Header, payload []byte, attributes 
 
 	hdr := header.Clone()
 
+	qItem, ok := pacerItemsPool.Get().(*item)
+	if !ok {
+		return 0, errLeakyBucketPacerQueueItemsPoolCastFailed
+	}
+	qItem.header = &hdr
+	qItem.payload = buf
+	qItem.size = len(payload)
+	qItem.attributes = attributes
+
 	select {
-	case p.queue <- &item{
-		header:     &hdr,
-		payload:    buf,
-		size:       len(payload),
-		attributes: attributes,
-	}:
+	case p.queue <- qItem:
 	default:
-		p.log.Warnf("failed to add item: queue is full")
+		return 0, errLeakyBucketPacerQueueFull
 	}
 
 	return header.MarshalSize() + len(payload), nil
@@ -141,7 +153,7 @@ func (p *LeakyBucketPacer) Run() {
 		case now := <-ticker.C:
 			budget := int(float64(now.Sub(lastSent).Milliseconds()) * float64(p.getTargetBitrate()) / 8000.0)
 			for len(p.queue) != 0 && budget > 0 {
-				p.log.Infof("budget=%v, len(queue)=%v, targetBitrate=%v", budget, len(p.queue), p.getTargetBitrate())
+				//p.log.Infof("budget=%v, len(queue)=%v, targetBitrate=%v", budget, len(p.queue), p.getTargetBitrate())
 
 				var next *item
 				var ok bool
@@ -158,6 +170,7 @@ func (p *LeakyBucketPacer) Run() {
 				entry, ok := p.ssrcToWriter.Load(next.header.SSRC)
 				if !ok {
 					p.log.Warnf("no writer found for ssrc: %v", next.header.SSRC)
+					pacerItemsPool.Put(next)
 					if !p.disableCopy {
 						pacerBufPool.Put(next.payload)
 					}
@@ -168,7 +181,7 @@ func (p *LeakyBucketPacer) Run() {
 				if next.attributes == nil {
 					next.attributes = make(interceptor.Attributes)
 				}
-				next.attributes.Set("now", now)
+				next.attributes.Set(timeNowAttributesKey, &now)
 
 				n, err := writer.Write(next.header, (next.payload)[:next.size], next.attributes)
 				if err != nil {
@@ -176,6 +189,8 @@ func (p *LeakyBucketPacer) Run() {
 				}
 				lastSent = now
 				budget -= n
+
+				pacerItemsPool.Put(next)
 
 				if !p.disableCopy {
 					pacerBufPool.Put(next.payload)
