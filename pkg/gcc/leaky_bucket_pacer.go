@@ -165,6 +165,11 @@ func (p *LeakyBucketPacer) Run() {
 				}
 				writer := entry.(interceptor.RTPWriter)
 
+				if next.attributes == nil {
+					next.attributes = make(interceptor.Attributes)
+				}
+				next.attributes.Set("now", now)
+
 				n, err := writer.Write(next.header, (next.payload)[:next.size], next.attributes)
 				if err != nil {
 					p.log.Errorf("failed to write packet: %v", err)

@@ -152,7 +152,13 @@ func (e *SendSideBWE) AddStream(info *interceptor.StreamInfo, writer interceptor
 			}
 			attributes.Set(cc.TwccExtensionAttributesKey, hdrExtID)
 		}
-		if err := e.feedbackAdapter.OnSent(time.Now(), header, len(payload), attributes); err != nil {
+
+		now, ok := attributes.Get("now").(time.Time)
+		if !ok {
+			now = time.Now()
+		}
+
+		if err := e.feedbackAdapter.OnSent(now, header, len(payload), attributes); err != nil {
 			return 0, err
 		}
 		return writer.Write(header, payload, attributes)
