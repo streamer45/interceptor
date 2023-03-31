@@ -12,6 +12,8 @@ import (
 
 var errLeakyBucketPacerPoolCastFailed = errors.New("failed to access leaky bucket pacer pool, cast failed")
 
+const pacerQueueMaxSize = 10000
+
 type item struct {
 	header     *rtp.Header
 	payload    []byte
@@ -61,7 +63,7 @@ func NewLeakyBucketPacer(initialBitrate int, opts ...PacerOption) (*LeakyBucketP
 		f:              1.5,
 		targetBitrate:  initialBitrate,
 		pacingInterval: 5 * time.Millisecond,
-		queue:          make(chan *item, 10000),
+		queue:          make(chan *item, pacerQueueMaxSize),
 		done:           make(chan struct{}),
 	}
 
