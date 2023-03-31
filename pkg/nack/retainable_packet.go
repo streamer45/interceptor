@@ -30,12 +30,12 @@ func newPacketManager() *packetManager {
 	}
 }
 
-func (m *packetManager) NewPacket(header *rtp.Header, payload []byte) (*retainablePacket, error) {
+func (m *packetManager) NewPacket(header *rtp.Header, payload []byte) (retainablePacket, error) {
 	if len(payload) > maxPayloadLen {
-		return nil, io.ErrShortBuffer
+		return retainablePacket{}, io.ErrShortBuffer
 	}
 
-	p := &retainablePacket{
+	p := retainablePacket{
 		onRelease: m.releasePacket,
 		// new packets have retain count of 1
 		count: 1,
@@ -44,7 +44,7 @@ func (m *packetManager) NewPacket(header *rtp.Header, payload []byte) (*retainab
 	var ok bool
 	p.header, ok = m.headerPool.Get().(*rtp.Header)
 	if !ok {
-		return nil, errFailedToCastHeaderPool
+		return retainablePacket{}, errFailedToCastHeaderPool
 	}
 
 	*p.header = header.Clone()
@@ -52,7 +52,7 @@ func (m *packetManager) NewPacket(header *rtp.Header, payload []byte) (*retainab
 	if payload != nil {
 		p.buffer, ok = m.payloadPool.Get().(*[]byte)
 		if !ok {
-			return nil, errFailedToCastPayloadPool
+			return retainablePacket{}, errFailedToCastPayloadPool
 		}
 
 		size := copy(*p.buffer, payload)
@@ -71,9 +71,8 @@ func (m *packetManager) releasePacket(header *rtp.Header, payload *[]byte) {
 
 type noOpPacketFactory struct{}
 
-func (f *noOpPacketFactory) NewPacket(header *rtp.Header, payload []byte) (*retainablePacket, error) {
-	return &retainablePacket{
-		onRelease: f.releasePacket,
+func (f *noOpPacketFactory) NewPacket(header *rtp.Header, payload []byte) (retainablePacket, error) {
+	return retainablePacket{
 		count:     1,
 		header:    header,
 		payload:   payload,
@@ -121,7 +120,9 @@ func (p *retainablePacket) Release() {
 
 	if p.count == 0 {
 		// release back to pool
-		p.onRelease(p.header, p.buffer)
+		if p.onRelease != nil {
+		  p.onRelease(p.header, p.buffer)
+		}
 		p.header = nil
 		p.buffer = nil
 		p.payload = nil
