@@ -17,7 +17,7 @@ var errLeakyBucketPacerQueueFull = errors.New("failed to add item to queue: chan
 const pacerQueueMaxSize = 10000
 
 type item struct {
-	header     *rtp.Header
+	header     rtp.Header
 	payload    []byte
 	size       int
 	attributes interceptor.Attributes
@@ -120,13 +120,11 @@ func (p *LeakyBucketPacer) Write(header *rtp.Header, payload []byte, attributes 
 		copy(buf, payload)
 	}
 
-	hdr := header.Clone()
-
 	qItem, ok := pacerItemsPool.Get().(*item)
 	if !ok {
 		return 0, errLeakyBucketPacerQueueItemsPoolCastFailed
 	}
-	qItem.header = &hdr
+	qItem.header = header.Clone()
 	qItem.payload = buf
 	qItem.size = len(payload)
 	qItem.attributes = attributes
@@ -183,7 +181,7 @@ func (p *LeakyBucketPacer) Run() {
 				}
 				next.attributes.Set(timeNowAttributesKey, &now)
 
-				n, err := writer.Write(next.header, (next.payload)[:next.size], next.attributes)
+				n, err := writer.Write(&next.header, (next.payload)[:next.size], next.attributes)
 				if err != nil {
 					p.log.Errorf("failed to write packet: %v", err)
 				}
