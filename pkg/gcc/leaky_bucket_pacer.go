@@ -29,7 +29,7 @@ type LeakyBucketPacer struct {
 
 	f                 float64
 	targetBitrate     int
-	targetBitrateLock sync.Mutex
+	targetBitrateLock sync.RWMutex
 
 	pacingInterval time.Duration
 
@@ -99,8 +99,8 @@ func (p *LeakyBucketPacer) SetTargetBitrate(rate int) {
 }
 
 func (p *LeakyBucketPacer) getTargetBitrate() int {
-	p.targetBitrateLock.Lock()
-	defer p.targetBitrateLock.Unlock()
+	p.targetBitrateLock.RLock()
+	defer p.targetBitrateLock.RUnlock()
 
 	return p.targetBitrate
 }
