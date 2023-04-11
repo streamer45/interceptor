@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	transportCCURI = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
-	latestBitrate  = 10_000
-	minBitrate     = 5_000
-	maxBitrate     = 50_000_000
+	transportCCURI       = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+	latestBitrate        = 10_000
+	minBitrate           = 5_000
+	maxBitrate           = 50_000_000
+	timeNowAttributesKey = iota + 1
 )
 
 // ErrSendSideBWEClosed is raised when SendSideBWE.WriteRTCP is called after SendSideBWE.Close
@@ -112,9 +113,17 @@ func NewSendSideBWE(opts ...Option) (*SendSideBWE, error) {
 		}
 	}
 	if e.pacer == nil {
-		e.pacer = NewLeakyBucketPacer(e.latestBitrate)
+		pacer, err := NewLeakyBucketPacer(e.latestBitrate)
+		if err != nil {
+			return nil, err
+		}
+		e.pacer = pacer
 	}
-	e.lossController = newLossBasedBWE(e.latestBitrate)
+	e.lossController = newLossBasedBWE(lossControllerConfig{
+		initialBitrate: e.latestBitrate,
+		minBitrate:     e.minBitrate,
+		maxBitrate:     e.maxBitrate,
+	})
 	e.delayController = newDelayController(delayControllerConfig{
 		nowFn:          time.Now,
 		initialBitrate: e.latestBitrate,
@@ -138,15 +147,22 @@ func (e *SendSideBWE) AddStream(info *interceptor.StreamInfo, writer interceptor
 	}
 
 	e.pacer.AddStream(info.SSRC, interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+		now, ok := attributes.Get(timeNowAttributesKey).(*time.Time)
+		if !ok {
+			now = &time.Time{}
+			*now = time.Now()
+		}
+
 		if hdrExtID != 0 {
-			if attributes == nil {
-				attributes = make(interceptor.Attributes)
+			if err := e.feedbackAdapter.OnSentTWCC(*now, hdrExtID, header, len(payload)); err != nil {
+				return 0, err
 			}
-			attributes.Set(cc.TwccExtensionAttributesKey, hdrExtID)
+		} else {
+			if err := e.feedbackAdapter.OnSent(*now, header, len(payload), attributes); err != nil {
+				return 0, err
+			}
 		}
-		if err := e.feedbackAdapter.OnSent(time.Now(), header, len(payload), attributes); err != nil {
-			return 0, err
-		}
+
 		return writer.Write(header, payload, attributes)
 	}))
 	return e.pacer
@@ -189,8 +205,10 @@ func (e *SendSideBWE) WriteRTCP(pkts []rtcp.Packet, attributes interceptor.Attri
 		}
 
 		feedbackMinRTT := time.Duration(math.MaxInt)
+		packetsLost := 0
 		for _, ack := range acks {
 			if ack.Arrival.IsZero() {
+				packetsLost++
 				continue
 			}
 			pendingTime := feedbackSentTime.Sub(ack.Arrival)
@@ -201,7 +219,9 @@ func (e *SendSideBWE) WriteRTCP(pkts []rtcp.Packet, attributes interceptor.Attri
 			e.delayController.updateRTT(feedbackMinRTT)
 		}
 
-		e.lossController.updateLossEstimate(acks)
+		if len(acks) != 0 {
+			e.lossController.updateLossEstimate(now, float64(packetsLost)/float64(len(acks)))
+		}
 		e.delayController.updateDelayEstimate(acks)
 	}
 	return nil
@@ -273,13 +293,13 @@ func (e *SendSideBWE) onDelayUpdate(delayStats DelayStats) {
 		e.pacer.SetTargetBitrate(e.latestBitrate)
 	}
 
-	if bitrateChanged && e.onTargetBitrateChange != nil {
-		go e.onTargetBitrateChange(bitrate)
-	}
-
 	e.latestStats = Stats{
 		LossStats:  lossStats,
 		DelayStats: delayStats,
+	}
+
+	if bitrateChanged && e.onTargetBitrateChange != nil {
+		go e.onTargetBitrateChange(bitrate)
 	}
 }
 
@@ -293,4 +313,26 @@ func (e *SendSideBWE) SetTargetBitrate(rate int) {
 	e.delayController.setTargetBitrate(rate)
 	e.lossController.setTargetBitrate(rate)
 	e.pacer.SetTargetBitrate(rate)
+}
+
+// SetMinBitrate dynamically sets the minimum bitrate to the given value
+// in bits per second.
+func (e *SendSideBWE) SetMinBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
+	e.minBitrate = rate
+	e.delayController.setMinBitrate(rate)
+	e.lossController.setMinBitrate(rate)
+}
+
+// SetMaxBitrate dynamically sets the maximum bitrate to the given value
+// in bits per second.
+func (e *SendSideBWE) SetMaxBitrate(rate int) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
+	e.maxBitrate = rate
+	e.delayController.setMaxBitrate(rate)
+	e.lossController.setMaxBitrate(rate)
 }

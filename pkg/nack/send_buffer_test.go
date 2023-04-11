@@ -20,7 +20,7 @@ func TestSendBuffer(t *testing.T) {
 				seq := start + n
 				pkt, err := pm.NewPacket(&rtp.Header{SequenceNumber: seq}, nil)
 				require.NoError(t, err)
-				sb.add(pkt)
+				sb.add(&pkt)
 			}
 		}
 
@@ -77,7 +77,7 @@ func TestSendBuffer_Overridden(t *testing.T) {
 	originalBytes := []byte("originalContent")
 	pkt, err := pm.NewPacket(&rtp.Header{SequenceNumber: 1}, originalBytes)
 	require.NoError(t, err)
-	sb.add(pkt)
+	sb.add(&pkt)
 
 	// change payload
 	copy(originalBytes, "altered")
@@ -90,7 +90,7 @@ func TestSendBuffer_Overridden(t *testing.T) {
 	// ensure original packet is released
 	pkt, err = pm.NewPacket(&rtp.Header{SequenceNumber: 2}, originalBytes)
 	require.NoError(t, err)
-	sb.add(pkt)
+	sb.add(&pkt)
 	require.Equal(t, 0, retrieved.count)
 
 	require.Nil(t, sb.get(1))
@@ -98,7 +98,7 @@ func TestSendBuffer_Overridden(t *testing.T) {
 
 // this test is only useful when being run with the race detector, it won't fail otherwise:
 //
-//     go test -race ./pkg/nack/
+//	go test -race ./pkg/nack/
 func TestSendBuffer_Race(t *testing.T) {
 	pm := newPacketManager()
 	for _, start := range []uint16{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 511, 512, 513, 32767, 32768, 32769, 65527, 65528, 65529, 65530, 65531, 65532, 65533, 65534, 65535} {
@@ -112,7 +112,7 @@ func TestSendBuffer_Race(t *testing.T) {
 				seq := start + n
 				pkt, err := pm.NewPacket(&rtp.Header{SequenceNumber: seq}, nil)
 				require.NoError(t, err)
-				sb.add(pkt)
+				sb.add(&pkt)
 			}
 		}
 

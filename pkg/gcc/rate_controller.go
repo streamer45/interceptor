@@ -172,3 +172,15 @@ func (c *rateController) setTargetBitrate(rate int) {
 	defer c.lock.Unlock()
 	c.target = rate
 }
+
+func (c *rateController) setMinBitrate(rate int) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.minBitrate = rate
+}
+
+func (c *rateController) setMaxBitrate(rate int) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.maxBitrate = rate
+}

@@ -15,7 +15,7 @@ type ResponderInterceptorFactory struct {
 }
 
 type packetFactory interface {
-	NewPacket(header *rtp.Header, payload []byte) (*retainablePacket, error)
+	NewPacket(header *rtp.Header, payload []byte) (retainablePacket, error)
 }
 
 // NewInterceptor constructs a new ResponderInterceptor
@@ -111,7 +111,7 @@ func (n *ResponderInterceptor) BindLocalStream(info *interceptor.StreamInfo, wri
 		if err != nil {
 			return 0, err
 		}
-		sendBuffer.add(pkt)
+		sendBuffer.add(&pkt)
 		return writer.Write(header, payload, attributes)
 	})
 }
