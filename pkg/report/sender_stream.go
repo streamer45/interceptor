@@ -12,7 +12,7 @@ import (
 type senderStream struct {
 	ssrc      uint32
 	clockRate float64
-	m         sync.Mutex
+	m         sync.RWMutex
 
 	// data from rtp packets
 	lastRTPTimeRTP  uint32
@@ -41,8 +41,8 @@ func (stream *senderStream) processRTP(now time.Time, header *rtp.Header, payloa
 }
 
 func (stream *senderStream) generateReport(now time.Time) *rtcp.SenderReport {
-	stream.m.Lock()
-	defer stream.m.Unlock()
+	stream.m.RLock()
+	defer stream.m.RUnlock()
 
 	return &rtcp.SenderReport{
 		SSRC:        stream.ssrc,
