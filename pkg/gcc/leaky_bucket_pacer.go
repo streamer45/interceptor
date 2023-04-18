@@ -31,10 +31,9 @@ type LeakyBucketPacer struct {
 	targetBitrate     int
 	targetBitrateLock sync.RWMutex
 
-	pacingInterval time.Duration
-
 	queue       chan *item
 	done        chan struct{}
+	tickCh      chan time.Time
 	disableCopy bool
 
 	ssrcToWriter sync.Map
@@ -67,12 +66,12 @@ func PacerDisableCopy() PacerOption {
 // NewLeakyBucketPacer initializes a new LeakyBucketPacer
 func NewLeakyBucketPacer(initialBitrate int, opts ...PacerOption) (*LeakyBucketPacer, error) {
 	p := &LeakyBucketPacer{
-		log:            logging.NewDefaultLoggerFactory().NewLogger("pacer"),
-		f:              1.5,
-		targetBitrate:  initialBitrate,
-		pacingInterval: 5 * time.Millisecond,
-		queue:          make(chan *item, pacerQueueMaxSize),
-		done:           make(chan struct{}),
+		log:           logging.NewDefaultLoggerFactory().NewLogger("pacer"),
+		f:             1.5,
+		targetBitrate: initialBitrate,
+		queue:         make(chan *item, pacerQueueMaxSize),
+		done:          make(chan struct{}),
+		tickCh:        make(chan time.Time),
 	}
 
 	for _, opt := range opts {
@@ -80,6 +79,8 @@ func NewLeakyBucketPacer(initialBitrate int, opts ...PacerOption) (*LeakyBucketP
 			return nil, err
 		}
 	}
+
+	ticker.AddChannel(p.tickCh)
 
 	go p.Run()
 	return p, nil
@@ -142,30 +143,22 @@ func (p *LeakyBucketPacer) Write(header *rtp.Header, payload []byte, attributes 
 
 // Run starts the LeakyBucketPacer
 func (p *LeakyBucketPacer) Run() {
-	ticker := time.NewTicker(p.pacingInterval)
-	defer ticker.Stop()
-
 	lastSent := time.Now()
 	for {
 		select {
 		case <-p.done:
 			return
-		case now := <-ticker.C:
+		case now := <-p.tickCh:
+			if len(p.queue) == 0 {
+				continue
+			}
+
 			budget := int(float64(now.Sub(lastSent).Milliseconds()) * float64(p.getTargetBitrate()) / 8000.0)
+
 			for len(p.queue) != 0 && budget > 0 {
 				//p.log.Infof("budget=%v, len(queue)=%v, targetBitrate=%v", budget, len(p.queue), p.getTargetBitrate())
 
-				var next *item
-				var ok bool
-				select {
-				case next, ok = <-p.queue:
-					if !ok {
-						continue
-					}
-				default:
-					p.log.Warnf("failed to get item from queue")
-					continue
-				}
+				next, ok := <-p.queue
 
 				entry, ok := p.ssrcToWriter.Load(next.header.SSRC)
 				if !ok {
@@ -191,7 +184,6 @@ func (p *LeakyBucketPacer) Run() {
 				budget -= n
 
 				pacerItemsPool.Put(next)
-
 				if !p.disableCopy {
 					pacerBufPool.Put(next.payload)
 				}
@@ -203,5 +195,5 @@ func (p *LeakyBucketPacer) Run() {
 // Close closes the LeakyBucketPacer
 func (p *LeakyBucketPacer) Close() error {
 	close(p.done)
-	return nil
+	return ticker.RemoveChannel(p.tickCh)
 }

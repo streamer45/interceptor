@@ -222,19 +222,21 @@ func (f *feedbackHistory) get(key feedbackHistoryKey) (Acknowledgment, bool) {
 }
 
 func (f *feedbackHistory) add(ack Acknowledgment) {
-	f.lock.Lock()
-	defer f.lock.Unlock()
-
 	key := feedbackHistoryKey{
 		ssrc:           ack.SSRC,
 		sequenceNumber: ack.SequenceNumber,
 	}
+
+	f.lock.Lock()
+	defer f.lock.Unlock()
+
 	// Check for existing
 	if ent, ok := f.items[key]; ok {
 		f.evictList.MoveToFront(ent)
 		ent.Value = ack
 		return
 	}
+
 	// Add new
 	ent := f.evictList.PushFront(ack)
 	f.items[key] = ent
