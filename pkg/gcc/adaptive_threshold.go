@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package gcc
 
 import (
@@ -57,7 +60,7 @@ func newAdaptiveThreshold(opts ...adaptiveThresholdOption) *adaptiveThreshold {
 	return at
 }
 
-func (a *adaptiveThreshold) compare(estimate, dt time.Duration) (usage, time.Duration, time.Duration) {
+func (a *adaptiveThreshold) compare(estimate, _ time.Duration) (usage, time.Duration, time.Duration) {
 	a.numDeltas++
 	if a.numDeltas < 2 {
 		return usageNormal, estimate, a.max

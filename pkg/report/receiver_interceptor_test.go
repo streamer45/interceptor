@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package report
 
 import (
@@ -175,6 +178,10 @@ func TestReceiverInterceptor(t *testing.T) {
 			SequenceNumber: 0x00,
 		}})
 
+		stream.ReceiveRTP(&rtp.Packet{Header: rtp.Header{
+			SequenceNumber: 0xfffe,
+		}})
+
 		pkts := <-stream.WrittenRTCP()
 		assert.Equal(t, len(pkts), 1)
 		rr, ok := pkts[0].(*rtcp.ReceiverReport)
@@ -182,7 +189,7 @@ func TestReceiverInterceptor(t *testing.T) {
 		assert.Equal(t, 1, len(rr.Reports))
 		assert.Equal(t, rtcp.ReceptionReport{
 			SSRC:               uint32(123456),
-			LastSequenceNumber: 1<<16 | 0x0000,
+			LastSequenceNumber: 1 << 16,
 			LastSenderReport:   0,
 			FractionLost:       0,
 			TotalLost:          0,
