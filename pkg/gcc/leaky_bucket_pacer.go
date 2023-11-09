@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package gcc
 
 import (
@@ -183,10 +186,10 @@ func (p *LeakyBucketPacer) Run() {
 				lastSent = now
 				budget -= n
 
-				pacerItemsPool.Put(next)
 				if !p.disableCopy {
 					pacerBufPool.Put(next.payload)
 				}
+				pacerItemsPool.Put(next)
 			}
 		}
 	}

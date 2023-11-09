@@ -1,6 +1,11 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package stats
 
 import (
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/interceptor"
@@ -78,12 +83,9 @@ type recorder struct {
 	maxLastSenderReports          int
 	maxLastReceiverReferenceTimes int
 
-	incomingRTPChan  chan *incomingRTP
-	incomingRTCPChan chan *incomingRTCP
-	outgoingRTPChan  chan *outgoingRTP
-	outgoingRTCPChan chan *outgoingRTCP
-	getStatsChan     chan Stats
-	done             chan struct{}
+	latestStats *internalStats
+	ms          *sync.Mutex // Locks latestStats
+	running     uint32
 }
 
 func newRecorder(ssrc uint32, clockRate float64) *recorder {
@@ -93,24 +95,30 @@ func newRecorder(ssrc uint32, clockRate float64) *recorder {
 		clockRate:                     clockRate,
 		maxLastSenderReports:          5,
 		maxLastReceiverReferenceTimes: 5,
-		incomingRTPChan:               make(chan *incomingRTP),
-		incomingRTCPChan:              make(chan *incomingRTCP),
-		outgoingRTPChan:               make(chan *outgoingRTP),
-		outgoingRTCPChan:              make(chan *outgoingRTCP),
-		getStatsChan:                  make(chan Stats),
-		done:                          make(chan struct{}),
+		latestStats:                   &internalStats{},
+		ms:                            &sync.Mutex{},
 	}
 }
 
 func (r *recorder) Stop() {
-	close(r.done)
+	atomic.StoreUint32(&r.running, 0)
 }
 
 func (r *recorder) GetStats() Stats {
-	return <-r.getStatsChan
+	r.ms.Lock()
+	defer r.ms.Unlock()
+	return Stats{
+		InboundRTPStreamStats:        r.latestStats.InboundRTPStreamStats,
+		OutboundRTPStreamStats:       r.latestStats.OutboundRTPStreamStats,
+		RemoteInboundRTPStreamStats:  r.latestStats.RemoteInboundRTPStreamStats,
+		RemoteOutboundRTPStreamStats: r.latestStats.RemoteOutboundRTPStreamStats,
+	}
 }
 
 func (r *recorder) recordIncomingRTP(latestStats internalStats, v *incomingRTP) internalStats {
+	if v.header.SSRC != r.ssrc {
+		return latestStats
+	}
 	sequenceNumber := latestStats.inboundSequencerNumber.Unwrap(v.header.SequenceNumber)
 	if !latestStats.inboundSequenceNumberInitialized {
 		latestStats.inboundFirstSequenceNumber = sequenceNumber
@@ -147,14 +155,33 @@ func (r *recorder) recordIncomingRTP(latestStats internalStats, v *incomingRTP) 
 
 func (r *recorder) recordOutgoingRTCP(latestStats internalStats, v *outgoingRTCP) internalStats {
 	for _, pkt := range v.pkts {
+		// The SSRC check is performed for most of the cases but not all. The
+		// reason is that ReceiverReferenceTimeReportBlocks don't have
+		// destination SSRCs but must still be recorded.
 		switch rtcpPkt := pkt.(type) {
 		case *rtcp.FullIntraRequest:
+			if !contains(pkt.DestinationSSRC(), r.ssrc) {
+				r.logger.Debugf("skipping outgoing RTCP pkt: %v\n", pkt)
+				continue
+			}
 			latestStats.InboundRTPStreamStats.FIRCount++
 		case *rtcp.PictureLossIndication:
+			if !contains(pkt.DestinationSSRC(), r.ssrc) {
+				r.logger.Debugf("skipping outgoing RTCP pkt: %v\n", pkt)
+				continue
+			}
 			latestStats.InboundRTPStreamStats.PLICount++
 		case *rtcp.TransportLayerNack:
+			if !contains(pkt.DestinationSSRC(), r.ssrc) {
+				r.logger.Debugf("skipping outgoing RTCP pkt: %v\n", pkt)
+				continue
+			}
 			latestStats.InboundRTPStreamStats.NACKCount++
 		case *rtcp.SenderReport:
+			if !contains(pkt.DestinationSSRC(), r.ssrc) {
+				r.logger.Debugf("skipping outgoing RTCP pkt: %v\n", pkt)
+				continue
+			}
 			latestStats.lastSenderReports = append(latestStats.lastSenderReports, rtcpPkt.NTPTime)
 			if len(latestStats.lastSenderReports) > r.maxLastSenderReports {
 				latestStats.lastSenderReports = latestStats.lastSenderReports[len(latestStats.lastSenderReports)-r.maxLastSenderReports:]
@@ -174,6 +201,9 @@ func (r *recorder) recordOutgoingRTCP(latestStats internalStats, v *outgoingRTCP
 }
 
 func (r *recorder) recordOutgoingRTP(latestStats internalStats, v *outgoingRTP) internalStats {
+	if v.header.SSRC != r.ssrc {
+		return latestStats
+	}
 	headerSize := v.header.MarshalSize()
 	latestStats.OutboundRTPStreamStats.PacketsSent++
 	latestStats.OutboundRTPStreamStats.BytesSent += uint64(headerSize + v.payloadLen)
@@ -187,30 +217,28 @@ func (r *recorder) recordOutgoingRTP(latestStats internalStats, v *outgoingRTP) 
 
 func (r *recorder) recordIncomingRR(latestStats internalStats, pkt *rtcp.ReceiverReport, ts time.Time) internalStats {
 	for _, report := range pkt.Reports {
-		if report.SSRC == r.ssrc {
-			if latestStats.remoteInboundFirstSequenceNumberInitialized {
-				cycles := uint64(report.LastSequenceNumber & 0xFFFF0000)
-				nr := uint64(report.LastSequenceNumber & 0x0000FFFF)
-				highest := cycles*0xFFFF + nr
-				latestStats.RemoteInboundRTPStreamStats.PacketsReceived = highest - uint64(report.TotalLost) - uint64(latestStats.remoteInboundFirstSequenceNumber) + 1
-			}
-			latestStats.RemoteInboundRTPStreamStats.PacketsLost = int64(report.TotalLost)
-			latestStats.RemoteInboundRTPStreamStats.Jitter = float64(report.Jitter) / r.clockRate
+		if latestStats.remoteInboundFirstSequenceNumberInitialized {
+			cycles := uint64(report.LastSequenceNumber&0xFFFF0000) >> 16
+			nr := uint64(report.LastSequenceNumber & 0x0000FFFF)
+			highest := cycles*(0xFFFF+1) + nr
+			latestStats.RemoteInboundRTPStreamStats.PacketsReceived = highest - uint64(report.TotalLost) - uint64(latestStats.remoteInboundFirstSequenceNumber) + 1
+		}
+		latestStats.RemoteInboundRTPStreamStats.PacketsLost = int64(report.TotalLost)
+		latestStats.RemoteInboundRTPStreamStats.Jitter = float64(report.Jitter) / r.clockRate
 
-			if report.Delay != 0 && report.LastSenderReport != 0 {
-				for i := min(r.maxLastSenderReports, len(latestStats.lastSenderReports)) - 1; i >= 0; i-- {
-					lastReport := latestStats.lastSenderReports[i]
-					if (lastReport&0x0000FFFFFFFF0000)>>16 == uint64(report.LastSenderReport) {
-						dlsr := time.Duration(float64(report.Delay) / 65536.0 * float64(time.Second))
-						latestStats.RemoteInboundRTPStreamStats.RoundTripTime = (ts.Add(-dlsr)).Sub(ntp.ToTime(lastReport))
-						latestStats.RemoteInboundRTPStreamStats.TotalRoundTripTime += latestStats.RemoteInboundRTPStreamStats.RoundTripTime
-						latestStats.RemoteInboundRTPStreamStats.RoundTripTimeMeasurements++
-						break
-					}
+		if report.Delay != 0 && report.LastSenderReport != 0 {
+			for i := min(r.maxLastSenderReports, len(latestStats.lastSenderReports)) - 1; i >= 0; i-- {
+				lastReport := latestStats.lastSenderReports[i]
+				if (lastReport&0x0000FFFFFFFF0000)>>16 == uint64(report.LastSenderReport) {
+					dlsr := time.Duration(float64(report.Delay) / 65536.0 * float64(time.Second))
+					latestStats.RemoteInboundRTPStreamStats.RoundTripTime = (ts.Add(-dlsr)).Sub(ntp.ToTime(lastReport))
+					latestStats.RemoteInboundRTPStreamStats.TotalRoundTripTime += latestStats.RemoteInboundRTPStreamStats.RoundTripTime
+					latestStats.RemoteInboundRTPStreamStats.RoundTripTimeMeasurements++
+					break
 				}
 			}
-			latestStats.FractionLost = float64(report.FractionLost) / 256.0
 		}
+		latestStats.FractionLost = float64(report.FractionLost) / 256.0
 	}
 	return latestStats
 }
@@ -223,7 +251,7 @@ func (r *recorder) recordIncomingXR(latestStats internalStats, pkt *rtcp.Extende
 					for i := min(r.maxLastReceiverReferenceTimes, len(latestStats.lastReceiverReferenceTimes)) - 1; i >= 0; i-- {
 						lastRR := latestStats.lastReceiverReferenceTimes[i]
 						if (lastRR&0x0000FFFFFFFF0000)>>16 == uint64(xrReport.LastRR) {
-							dlrr := time.Duration(xrReport.DLRR/65536.0) * time.Second
+							dlrr := time.Duration(float64(xrReport.DLRR) / 65536.0 * float64(time.Second))
 							latestStats.RemoteOutboundRTPStreamStats.RoundTripTime = (ts.Add(-dlrr)).Sub(ntp.ToTime(lastRR))
 							latestStats.RemoteOutboundRTPStreamStats.TotalRoundTripTime += latestStats.RemoteOutboundRTPStreamStats.RoundTripTime
 							latestStats.RemoteOutboundRTPStreamStats.RoundTripTimeMeasurements++
@@ -236,8 +264,21 @@ func (r *recorder) recordIncomingXR(latestStats internalStats, pkt *rtcp.Extende
 	return latestStats
 }
 
+func contains(ls []uint32, e uint32) bool {
+	for _, x := range ls {
+		if x == e {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *recorder) recordIncomingRTCP(latestStats internalStats, v *incomingRTCP) internalStats {
 	for _, pkt := range v.pkts {
+		if !contains(pkt.DestinationSSRC(), r.ssrc) {
+			r.logger.Debugf("skipping incoming RTCP pkt: %v\n", pkt)
+			continue
+		}
 		switch pkt := pkt.(type) {
 		case *rtcp.TransportLayerNack:
 			latestStats.OutboundRTPStreamStats.NACKCount++
@@ -246,7 +287,7 @@ func (r *recorder) recordIncomingRTCP(latestStats internalStats, v *incomingRTCP
 		case *rtcp.PictureLossIndication:
 			latestStats.OutboundRTPStreamStats.PLICount++
 		case *rtcp.ReceiverReport:
-			return r.recordIncomingRR(latestStats, pkt, v.ts)
+			latestStats = r.recordIncomingRR(latestStats, pkt, v.ts)
 		case *rtcp.SenderReport:
 			latestStats.RemoteOutboundRTPStreamStats.PacketsSent = uint64(pkt.PacketCount)
 			latestStats.RemoteOutboundRTPStreamStats.BytesSent = uint64(pkt.OctetCount)
@@ -261,38 +302,13 @@ func (r *recorder) recordIncomingRTCP(latestStats internalStats, v *incomingRTCP
 }
 
 func (r *recorder) Start() {
-	latestStats := &internalStats{}
-	for {
-		select {
-		case <-r.done:
-			return
-		case v := <-r.incomingRTPChan:
-			s := r.recordIncomingRTP(*latestStats, v)
-			latestStats = &s
-
-		case v := <-r.outgoingRTCPChan:
-			s := r.recordOutgoingRTCP(*latestStats, v)
-			latestStats = &s
-
-		case v := <-r.outgoingRTPChan:
-			s := r.recordOutgoingRTP(*latestStats, v)
-			latestStats = &s
-
-		case v := <-r.incomingRTCPChan:
-			s := r.recordIncomingRTCP(*latestStats, v)
-			latestStats = &s
-
-		case r.getStatsChan <- Stats{
-			InboundRTPStreamStats:        latestStats.InboundRTPStreamStats,
-			OutboundRTPStreamStats:       latestStats.OutboundRTPStreamStats,
-			RemoteInboundRTPStreamStats:  latestStats.RemoteInboundRTPStreamStats,
-			RemoteOutboundRTPStreamStats: latestStats.RemoteOutboundRTPStreamStats,
-		}:
-		}
-	}
+	atomic.StoreUint32(&r.running, 1)
 }
 
 func (r *recorder) QueueIncomingRTP(ts time.Time, buf []byte, attr interceptor.Attributes) {
+	if atomic.LoadUint32(&r.running) == 0 {
+		return
+	}
 	if attr == nil {
 		attr = make(interceptor.Attributes)
 	}
@@ -302,15 +318,20 @@ func (r *recorder) QueueIncomingRTP(ts time.Time, buf []byte, attr interceptor.A
 		return
 	}
 	hdr := header.Clone()
-	r.incomingRTPChan <- &incomingRTP{
+	r.ms.Lock()
+	*r.latestStats = r.recordIncomingRTP(*r.latestStats, &incomingRTP{
 		ts:         ts,
 		header:     hdr,
 		payloadLen: len(buf) - hdr.MarshalSize(),
 		attr:       attr,
-	}
+	})
+	r.ms.Unlock()
 }
 
 func (r *recorder) QueueIncomingRTCP(ts time.Time, buf []byte, attr interceptor.Attributes) {
+	if atomic.LoadUint32(&r.running) == 0 {
+		return
+	}
 	if attr == nil {
 		attr = make(interceptor.Attributes)
 	}
@@ -319,29 +340,41 @@ func (r *recorder) QueueIncomingRTCP(ts time.Time, buf []byte, attr interceptor.
 		r.logger.Warnf("failed to get RTCP packets, skipping incoming RTCP packet in stats calculation: %v", err)
 		return
 	}
-	r.incomingRTCPChan <- &incomingRTCP{
+	r.ms.Lock()
+	*r.latestStats = r.recordIncomingRTCP(*r.latestStats, &incomingRTCP{
 		ts:   ts,
 		pkts: pkts,
 		attr: attr,
-	}
+	})
+	r.ms.Unlock()
 }
 
 func (r *recorder) QueueOutgoingRTP(ts time.Time, header *rtp.Header, payload []byte, attr interceptor.Attributes) {
+	if atomic.LoadUint32(&r.running) == 0 {
+		return
+	}
 	hdr := header.Clone()
-	r.outgoingRTPChan <- &outgoingRTP{
+	r.ms.Lock()
+	*r.latestStats = r.recordOutgoingRTP(*r.latestStats, &outgoingRTP{
 		ts:         ts,
 		header:     hdr,
 		payloadLen: len(payload),
 		attr:       attr,
-	}
+	})
+	r.ms.Unlock()
 }
 
 func (r *recorder) QueueOutgoingRTCP(ts time.Time, pkts []rtcp.Packet, attr interceptor.Attributes) {
-	r.outgoingRTCPChan <- &outgoingRTCP{
+	if atomic.LoadUint32(&r.running) == 0 {
+		return
+	}
+	r.ms.Lock()
+	*r.latestStats = r.recordOutgoingRTCP(*r.latestStats, &outgoingRTCP{
 		ts:   ts,
 		pkts: pkts,
 		attr: attr,
-	}
+	})
+	r.ms.Unlock()
 }
 
 func min(a, b int) int {
