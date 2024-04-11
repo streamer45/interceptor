@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package rfc8888
 
 import (
@@ -176,7 +179,7 @@ func TestNTPTime32(t *testing.T) {
 		},
 		{
 			input:    notSoLongAgo,
-			expected: uint32(int(notSoLongAgo.Sub(zero).Seconds())&0xffff) << 16,
+			expected: uint32(uint(notSoLongAgo.Sub(zero).Seconds())&0xffff) << 16,
 		},
 		{
 			input:    zero.Add(400 * time.Millisecond),

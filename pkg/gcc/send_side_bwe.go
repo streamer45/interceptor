@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package gcc
 
 import (
@@ -169,7 +172,7 @@ func (e *SendSideBWE) AddStream(info *interceptor.StreamInfo, writer interceptor
 }
 
 // WriteRTCP adds some RTCP feedback to the bandwidth estimator
-func (e *SendSideBWE) WriteRTCP(pkts []rtcp.Packet, attributes interceptor.Attributes) error {
+func (e *SendSideBWE) WriteRTCP(pkts []rtcp.Packet, _ interceptor.Attributes) error {
 	now := time.Now()
 	e.closeLock.RLock()
 	defer e.closeLock.RUnlock()

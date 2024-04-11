@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 // Package rfc8888 provides an interceptor that generates congestion control
 // feedback reports as defined by RFC 8888.
 package rfc8888
@@ -20,7 +23,7 @@ type SenderInterceptorFactory struct {
 }
 
 // NewInterceptor constructs a new SenderInterceptor
-func (s *SenderInterceptorFactory) NewInterceptor(id string) (interceptor.Interceptor, error) {
+func (s *SenderInterceptorFactory) NewInterceptor(_ string) (interceptor.Interceptor, error) {
 	i := &SenderInterceptor{
 		NoOp:          interceptor.NoOp{},
 		log:           logging.NewDefaultLoggerFactory().NewLogger("rfc8888_interceptor"),
@@ -90,7 +93,7 @@ func (s *SenderInterceptor) BindRTCPWriter(writer interceptor.RTCPWriter) interc
 
 // BindRemoteStream lets you modify any incoming RTP packets. It is called once for per RemoteStream. The returned method
 // will be called once per rtp packet.
-func (s *SenderInterceptor) BindRemoteStream(info *interceptor.StreamInfo, reader interceptor.RTPReader) interceptor.RTPReader {
+func (s *SenderInterceptor) BindRemoteStream(_ *interceptor.StreamInfo, reader interceptor.RTPReader) interceptor.RTPReader {
 	return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
 		i, attr, err := reader.Read(b, a)
 		if err != nil {

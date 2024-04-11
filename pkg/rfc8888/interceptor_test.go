@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package rfc8888
 
 import (
@@ -83,7 +86,7 @@ func TestInterceptor(t *testing.T) {
 			C: make(chan time.Time),
 		}
 		f, err := NewSenderInterceptor(
-			SenderTicker(func(d time.Duration) ticker {
+			SenderTicker(func(time.Duration) ticker {
 				return mTick
 			}),
 			SenderNow(mNow.Now),
@@ -163,7 +166,7 @@ func TestInterceptor(t *testing.T) {
 			C: make(chan time.Time),
 		}
 		f, err := NewSenderInterceptor(
-			SenderTicker(func(d time.Duration) ticker {
+			SenderTicker(func(time.Duration) ticker {
 				return mTick
 			}),
 			SenderNow(mNow.Now),

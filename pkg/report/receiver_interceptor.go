@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package report
 
 import (
@@ -15,7 +18,7 @@ type ReceiverInterceptorFactory struct {
 }
 
 // NewInterceptor constructs a new ReceiverInterceptor
-func (r *ReceiverInterceptorFactory) NewInterceptor(id string) (interceptor.Interceptor, error) {
+func (r *ReceiverInterceptorFactory) NewInterceptor(_ string) (interceptor.Interceptor, error) {
 	i := &ReceiverInterceptor{
 		interval: 1 * time.Second,
 		now:      time.Now,
@@ -97,7 +100,7 @@ func (r *ReceiverInterceptor) loop(rtcpWriter interceptor.RTCPWriter) {
 		select {
 		case <-ticker.C:
 			now := r.now()
-			r.streams.Range(func(key, value interface{}) bool {
+			r.streams.Range(func(_, value interface{}) bool {
 				if stream, ok := value.(*receiverStream); !ok {
 					r.log.Warnf("failed to cast ReceiverInterceptor stream")
 				} else if _, err := rtcpWriter.Write([]rtcp.Packet{stream.generateReport(now)}, interceptor.Attributes{}); err != nil {
@@ -139,8 +142,8 @@ func (r *ReceiverInterceptor) BindRemoteStream(info *interceptor.StreamInfo, rea
 	})
 }
 
-// UnbindLocalStream is called when the Stream is removed. It can be used to clean up any data related to that track.
-func (r *ReceiverInterceptor) UnbindLocalStream(info *interceptor.StreamInfo) {
+// UnbindRemoteStream is called when the Stream is removed. It can be used to clean up any data related to that track.
+func (r *ReceiverInterceptor) UnbindRemoteStream(info *interceptor.StreamInfo) {
 	r.streams.Delete(info.SSRC)
 }
 

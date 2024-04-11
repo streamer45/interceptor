@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package packetdump
 
 import (
@@ -44,10 +47,10 @@ func NewPacketDumper(opts ...PacketDumperOption) (*PacketDumper, error) {
 		rtcpStream: os.Stdout,
 		rtpFormat:  DefaultRTPFormatter,
 		rtcpFormat: DefaultRTCPFormatter,
-		rtpFilter: func(pkt *rtp.Packet) bool {
+		rtpFilter: func(*rtp.Packet) bool {
 			return true
 		},
-		rtcpFilter: func(pkt []rtcp.Packet) bool {
+		rtcpFilter: func([]rtcp.Packet) bool {
 			return true
 		},
 	}

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package cc
 
 import (
@@ -130,7 +133,7 @@ func (f *FeedbackAdapter) unpackStatusVectorChunk(start uint16, refTime time.Tim
 
 // OnTransportCCFeedback converts incoming TWCC RTCP packet feedback to
 // Acknowledgments.
-func (f *FeedbackAdapter) OnTransportCCFeedback(ts time.Time, feedback *rtcp.TransportLayerCC) ([]Acknowledgment, error) {
+func (f *FeedbackAdapter) OnTransportCCFeedback(_ time.Time, feedback *rtcp.TransportLayerCC) ([]Acknowledgment, error) {
 	result := []Acknowledgment{}
 	index := feedback.BaseSequenceNumber
 	refTime := time.Time{}.Add(time.Duration(feedback.ReferenceTime) * 64 * time.Millisecond)
@@ -166,7 +169,7 @@ func (f *FeedbackAdapter) OnTransportCCFeedback(ts time.Time, feedback *rtcp.Tra
 
 // OnRFC8888Feedback converts incoming Congestion Control Feedback RTCP packet
 // to Acknowledgments.
-func (f *FeedbackAdapter) OnRFC8888Feedback(ts time.Time, feedback *rtcp.CCFeedbackReport) []Acknowledgment {
+func (f *FeedbackAdapter) OnRFC8888Feedback(_ time.Time, feedback *rtcp.CCFeedbackReport) []Acknowledgment {
 	result := []Acknowledgment{}
 	referenceTime := ntp.ToTime(uint64(feedback.ReportTimestamp) << 16)
 	for _, rb := range feedback.ReportBlocks {

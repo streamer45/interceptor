@@ -1,11 +1,14 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package twcc
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/pion/rtcp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func rtcpToTwcc(t *testing.T, in []rtcp.Packet) []*rtcp.TransportLayerCC {
@@ -253,6 +256,53 @@ func Test_feedback(t *testing.T) {
 		}
 	})
 
+	t.Run("add received small deltas", func(t *testing.T) {
+		f := newFeedback(0, 0, 0)
+		base := int64(320 * 1000)
+		deltaUS := int64(200)
+		f.setBase(5, base)
+
+		for i := int64(0); i < 5; i++ {
+			got := f.addReceived(5+uint16(i+1), base+deltaUS*i)
+			assert.True(t, got)
+		}
+
+		pkt := f.getRTCP()
+
+		expectedDeltas := []*rtcp.RecvDelta{
+			{
+				Type:  rtcp.TypeTCCPacketReceivedSmallDelta,
+				Delta: 0,
+			},
+			{
+				Type: rtcp.TypeTCCPacketReceivedSmallDelta,
+				// NOTE: The delta is less than the scale factor, but it should be rounded up.
+				// (rtcp.RecvDelta).Marshal() simply truncates to an interval of the scale factor,
+				// so we want to make sure that the deltas have any rounding applied when building
+				// the feedback.
+				Delta: 1 * rtcp.TypeTCCDeltaScaleFactor,
+			},
+			{
+				Type:  rtcp.TypeTCCPacketReceivedSmallDelta,
+				Delta: 1 * rtcp.TypeTCCDeltaScaleFactor,
+			},
+			{
+				Type: rtcp.TypeTCCPacketReceivedSmallDelta,
+				// NOTE: This is zero because even though the deltas are all the same, the rounding error has
+				// built up enough by this packet to cause it to be rounded down.
+				Delta: 0 * rtcp.TypeTCCDeltaScaleFactor,
+			},
+			{
+				Type:  rtcp.TypeTCCPacketReceivedSmallDelta,
+				Delta: 1 * rtcp.TypeTCCDeltaScaleFactor,
+			},
+		}
+		assert.Equal(t, len(expectedDeltas), len(pkt.RecvDeltas))
+		for i, d := range expectedDeltas {
+			assert.Equal(t, d, pkt.RecvDeltas[i])
+		}
+	})
+
 	t.Run("add received wrapped sequence number", func(t *testing.T) {
 		f := newFeedback(0, 0, 0)
 		f.setBase(65535, 320*1000)
@@ -370,8 +420,12 @@ func increaseTime(arrivalTime *int64, increaseAmount int64) int64 {
 
 func marshalAll(t *testing.T, pkts []rtcp.Packet) {
 	for _, pkt := range pkts {
-		_, err := pkt.Marshal()
+		marshaled, err := pkt.Marshal()
 		assert.NoError(t, err)
+
+		// Chrome expects feedback packets to always be 18 bytes or more.
+		// https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/modules/rtp_rtcp/source/rtcp_packet/transport_feedback.cc;l=423?q=transport_feedback.cc&ss=chromium%2Fchromium%2Fsrc
+		assert.GreaterOrEqual(t, len(marshaled), 18)
 	}
 }
 
@@ -436,14 +490,15 @@ func TestBuildFeedbackPacket_Rolling(t *testing.T) {
 	r := NewRecorder(5000)
 
 	arrivalTime := int64(scaleFactorReferenceTime)
-	addRun(t, r, []uint16{65535}, []int64{
+	addRun(t, r, []uint16{65534, 65535}, []int64{
 		arrivalTime,
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
 	})
 
 	rtcpPackets := r.BuildFeedbackPacket()
 	assert.Equal(t, 1, len(rtcpPackets))
 
-	addRun(t, r, []uint16{4, 8, 9, 10}, []int64{
+	addRun(t, r, []uint16{0, 4, 5, 6}, []int64{
 		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
 		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
 		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
@@ -462,7 +517,7 @@ func TestBuildFeedbackPacket_Rolling(t *testing.T) {
 		},
 		SenderSSRC:         5000,
 		MediaSSRC:          5000,
-		BaseSequenceNumber: 4,
+		BaseSequenceNumber: 0,
 		ReferenceTime:      1,
 		FbPktCount:         1,
 		PacketStatusCount:  7,
@@ -482,7 +537,7 @@ func TestBuildFeedbackPacket_Rolling(t *testing.T) {
 			},
 		},
 		RecvDeltas: []*rtcp.RecvDelta{
-			{Type: rtcp.TypeTCCPacketReceivedSmallDelta, Delta: rtcp.TypeTCCDeltaScaleFactor},
+			{Type: rtcp.TypeTCCPacketReceivedSmallDelta, Delta: rtcp.TypeTCCDeltaScaleFactor * 2},
 			{Type: rtcp.TypeTCCPacketReceivedSmallDelta, Delta: rtcp.TypeTCCDeltaScaleFactor},
 			{Type: rtcp.TypeTCCPacketReceivedSmallDelta, Delta: rtcp.TypeTCCDeltaScaleFactor},
 			{Type: rtcp.TypeTCCPacketReceivedSmallDelta, Delta: rtcp.TypeTCCDeltaScaleFactor},
@@ -491,11 +546,93 @@ func TestBuildFeedbackPacket_Rolling(t *testing.T) {
 	marshalAll(t, rtcpPackets)
 }
 
-func TestBuildFeedbackPacketCount(t *testing.T) {
+func TestBuildFeedbackPacket_MinInput(t *testing.T) {
 	r := NewRecorder(5000)
 
 	arrivalTime := int64(scaleFactorReferenceTime)
 	addRun(t, r, []uint16{0}, []int64{
+		arrivalTime,
+	})
+
+	pkts := r.BuildFeedbackPacket()
+	assert.Equal(t, 1, len(pkts))
+
+	assert.Equal(t, &rtcp.TransportLayerCC{
+		Header: rtcp.Header{
+			Count:   rtcp.FormatTCC,
+			Type:    rtcp.TypeTransportSpecificFeedback,
+			Length:  5,
+			Padding: true,
+		},
+		SenderSSRC:         5000,
+		MediaSSRC:          5000,
+		BaseSequenceNumber: 0,
+		ReferenceTime:      1,
+		FbPktCount:         0,
+		PacketStatusCount:  1,
+		PacketChunks: []rtcp.PacketStatusChunk{
+			&rtcp.RunLengthChunk{
+				PacketStatusSymbol: 1,
+				Type:               rtcp.TypeTCCRunLengthChunk,
+				RunLength:          1,
+			},
+		},
+		RecvDeltas: []*rtcp.RecvDelta{
+			{Type: rtcp.TypeTCCPacketReceivedSmallDelta, Delta: 0},
+		},
+	}, rtcpToTwcc(t, pkts)[0])
+	marshalAll(t, pkts)
+}
+
+func TestBuildFeedbackPacket_MissingPacketsBetweenFeedbacks(t *testing.T) {
+	r := NewRecorder(5000)
+
+	// Create a run of received packets.
+	arrivalTime := int64(scaleFactorReferenceTime)
+	addRun(t, r, []uint16{0, 1, 2, 3}, []int64{
+		scaleFactorReferenceTime,
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+	})
+	rtcpPackets := r.BuildFeedbackPacket()
+	assert.Equal(t, 1, len(rtcpPackets))
+
+	// Now create another run of received packets, but with a gap.
+	addRun(t, r, []uint16{7, 8, 9}, []int64{
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor*256),
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+	})
+	rtcpPackets = r.BuildFeedbackPacket()
+	require.Equal(t, 1, len(rtcpPackets))
+	twccPacket := rtcpToTwcc(t, rtcpPackets)[0]
+	assert.Equal(t, uint16(4), twccPacket.BaseSequenceNumber, "Base sequence should be one after the end of the previous feedback")
+	assert.Equal(t, uint16(6), twccPacket.PacketStatusCount, "Feedback should include status for both the lost and received packets")
+	expectedPacketChunks := []rtcp.PacketStatusChunk{
+		&rtcp.StatusVectorChunk{
+			Type:       rtcp.TypeTCCRunLengthChunk,
+			SymbolSize: rtcp.TypeTCCSymbolSizeTwoBit,
+			SymbolList: []uint16{
+				rtcp.TypeTCCPacketNotReceived,
+				rtcp.TypeTCCPacketNotReceived,
+				rtcp.TypeTCCPacketNotReceived,
+				rtcp.TypeTCCPacketReceivedSmallDelta,
+				rtcp.TypeTCCPacketReceivedSmallDelta,
+				rtcp.TypeTCCPacketReceivedSmallDelta,
+			},
+		},
+	}
+	assert.Equal(t, expectedPacketChunks, twccPacket.PacketChunks)
+	marshalAll(t, rtcpPackets)
+}
+
+func TestBuildFeedbackPacketCount(t *testing.T) {
+	r := NewRecorder(5000)
+
+	arrivalTime := int64(scaleFactorReferenceTime)
+	addRun(t, r, []uint16{0, 1}, []int64{
+		arrivalTime,
 		arrivalTime,
 	})
 
@@ -505,7 +642,8 @@ func TestBuildFeedbackPacketCount(t *testing.T) {
 	twcc := rtcpToTwcc(t, pkts)[0]
 	assert.Equal(t, uint8(0), twcc.FbPktCount)
 
-	addRun(t, r, []uint16{0}, []int64{
+	addRun(t, r, []uint16{0, 1}, []int64{
+		arrivalTime,
 		arrivalTime,
 	})
 
@@ -751,141 +889,24 @@ func TestReorderedPackets(t *testing.T) {
 	marshalAll(t, rtcpPackets)
 }
 
-func TestInsertSorted(t *testing.T) {
-	cases := []struct {
-		l        []pktInfo
-		e        pktInfo
-		expected []pktInfo
-	}{
-		{
-			l: []pktInfo{},
-			e: pktInfo{},
-			expected: []pktInfo{{
-				sequenceNumber: 0,
-				arrivalTime:    0,
-			}},
-		},
-		{
-			l: []pktInfo{
-				{
-					sequenceNumber: 0,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 1,
-					arrivalTime:    0,
-				},
-			},
-			e: pktInfo{
-				sequenceNumber: 2,
-				arrivalTime:    0,
-			},
-			expected: []pktInfo{
-				{
-					sequenceNumber: 0,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 1,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 2,
-					arrivalTime:    0,
-				},
-			},
-		},
-		{
-			l: []pktInfo{
-				{
-					sequenceNumber: 0,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 2,
-					arrivalTime:    0,
-				},
-			},
-			e: pktInfo{
-				sequenceNumber: 1,
-				arrivalTime:    0,
-			},
-			expected: []pktInfo{
-				{
-					sequenceNumber: 0,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 1,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 2,
-					arrivalTime:    0,
-				},
-			},
-		},
-		{
-			l: []pktInfo{
-				{
-					sequenceNumber: 0,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 1,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 2,
-					arrivalTime:    0,
-				},
-			},
-			e: pktInfo{
-				sequenceNumber: 1,
-				arrivalTime:    0,
-			},
-			expected: []pktInfo{
-				{
-					sequenceNumber: 0,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 1,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 2,
-					arrivalTime:    0,
-				},
-			},
-		},
-		{
-			l: []pktInfo{
-				{
-					sequenceNumber: 10,
-					arrivalTime:    0,
-				},
-			},
-			e: pktInfo{
-				sequenceNumber: 9,
-				arrivalTime:    0,
-			},
-			expected: []pktInfo{
-				{
-					sequenceNumber: 9,
-					arrivalTime:    0,
-				},
-				{
-					sequenceNumber: 10,
-					arrivalTime:    0,
-				},
-			},
-		},
-	}
-	for i, c := range cases {
-		c := c
-		t.Run(fmt.Sprintf("%v", i), func(t *testing.T) {
-			assert.Equal(t, c.expected, insertSorted(c.l, c.e))
-		})
-	}
+func TestPacketsHheld(t *testing.T) {
+	r := NewRecorder(5000)
+	assert.Zero(t, r.PacketsHeld())
+
+	arrivalTime := int64(scaleFactorReferenceTime)
+	addRun(t, r, []uint16{0, 1, 2}, []int64{
+		arrivalTime,
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+	})
+	assert.Equal(t, r.PacketsHeld(), 3)
+
+	addRun(t, r, []uint16{3, 4}, []int64{
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+		increaseTime(&arrivalTime, rtcp.TypeTCCDeltaScaleFactor),
+	})
+	assert.Equal(t, r.PacketsHeld(), 5)
+
+	r.BuildFeedbackPacket()
+	assert.Zero(t, r.PacketsHeld())
 }
