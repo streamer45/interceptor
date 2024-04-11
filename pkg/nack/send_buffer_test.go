@@ -23,7 +23,7 @@ func TestSendBuffer(t *testing.T) {
 				seq := start + n
 				pkt, err := pm.NewPacket(&rtp.Header{SequenceNumber: seq}, nil)
 				require.NoError(t, err)
-				sb.add(pkt)
+				sb.add(&pkt)
 			}
 		}
 
@@ -80,7 +80,7 @@ func TestSendBuffer_Overridden(t *testing.T) {
 	originalBytes := []byte("originalContent")
 	pkt, err := pm.NewPacket(&rtp.Header{SequenceNumber: 1}, originalBytes)
 	require.NoError(t, err)
-	sb.add(pkt)
+	sb.add(&pkt)
 
 	// change payload
 	copy(originalBytes, "altered")
@@ -93,7 +93,7 @@ func TestSendBuffer_Overridden(t *testing.T) {
 	// ensure original packet is released
 	pkt, err = pm.NewPacket(&rtp.Header{SequenceNumber: 2}, originalBytes)
 	require.NoError(t, err)
-	sb.add(pkt)
+	sb.add(&pkt)
 	require.Equal(t, 0, retrieved.count)
 
 	require.Nil(t, sb.get(1))
@@ -115,7 +115,7 @@ func TestSendBuffer_Race(t *testing.T) {
 				seq := start + n
 				pkt, err := pm.NewPacket(&rtp.Header{SequenceNumber: seq}, nil)
 				require.NoError(t, err)
-				sb.add(pkt)
+				sb.add(&pkt)
 			}
 		}
 
