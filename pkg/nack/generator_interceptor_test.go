@@ -20,6 +20,7 @@ func TestGeneratorInterceptor(t *testing.T) {
 	f, err := NewGeneratorInterceptor(
 		GeneratorSize(64),
 		GeneratorSkipLastN(2),
+		GeneratorMaxNacksPerPacket(10),
 		GeneratorInterval(interval),
 		GeneratorLog(logging.NewDefaultLoggerFactory().NewLogger("test")),
 	)
@@ -44,7 +45,7 @@ func TestGeneratorInterceptor(t *testing.T) {
 			assert.NoError(t, r.Err)
 			assert.Equal(t, seqNum, r.Packet.SequenceNumber)
 		case <-time.After(50 * time.Millisecond):
-			t.Fatal("receiver rtp packet not found")
+			assert.FailNow(t, "receiver rtp packet not found")
 		}
 	}
 
@@ -67,7 +68,7 @@ func TestGeneratorInterceptor(t *testing.T) {
 		// we want packets: 13, 15 (not packet 17, because skipLastN is setReceived to 2)
 		assert.Equal(t, rtcp.PacketBitmap(0b10), p.Nacks[0].LostPackets)
 	case <-time.After(10 * time.Millisecond):
-		t.Fatal("written rtcp packet not found")
+		assert.FailNow(t, "written rtcp packet not found")
 	}
 }
 

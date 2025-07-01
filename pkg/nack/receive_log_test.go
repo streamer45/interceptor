@@ -5,8 +5,9 @@ package nack
 
 import (
 	"fmt"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 //nolint:cyclop
@@ -18,9 +19,7 @@ func TestReceivedBuffer(t *testing.T) {
 
 		t.Run(fmt.Sprintf("StartFrom%d", start), func(t *testing.T) {
 			rl, err := newReceiveLog(128)
-			if err != nil {
-				t.Fatalf("%+v", err)
-			}
+			assert.NoError(t, err)
 
 			all := func(minVal uint16, maxVal uint16) []uint16 {
 				result := make([]uint16, 0)
@@ -50,23 +49,20 @@ func TestReceivedBuffer(t *testing.T) {
 				t.Helper()
 				for _, n := range nums {
 					seq := start + n
-					if !rl.get(seq) {
-						t.Errorf("not found: %d", seq)
-					}
+					assert.True(t, rl.get(seq), "packet not found: %d", seq)
 				}
 			}
 			assertNOTGet := func(nums ...uint16) {
 				t.Helper()
 				for _, n := range nums {
 					seq := start + n
-					if rl.get(seq) {
-						t.Errorf("packet found for %d", seq)
-					}
+					assert.False(t, rl.get(seq), "packet found for %d", seq)
 				}
 			}
 			assertMissing := func(skipLastN uint16, nums []uint16) {
 				t.Helper()
-				missing := rl.missingSeqNumbers(skipLastN)
+				missingPacketSeqNums := make([]uint16, rl.size)
+				missing := rl.missingSeqNumbers(skipLastN, missingPacketSeqNums)
 				if missing == nil {
 					missing = []uint16{}
 				}
@@ -74,15 +70,11 @@ func TestReceivedBuffer(t *testing.T) {
 				for _, n := range nums {
 					want = append(want, start+n)
 				}
-				if !reflect.DeepEqual(want, missing) {
-					t.Errorf("missing want/got %v / %v", want, missing)
-				}
+				assert.Equal(t, want, missing, "missing packets don't match")
 			}
 			assertLastConsecutive := func(lastConsecutive uint16) {
 				want := lastConsecutive + start
-				if rl.lastConsecutive != want {
-					t.Errorf("invalid lastConsecutive want %d got %d", want, rl.lastConsecutive)
-				}
+				assert.Equal(t, want, rl.lastConsecutive, "lastConsecutive doesn't match")
 			}
 
 			add(0)
@@ -140,6 +132,24 @@ func TestReceivedBuffer(t *testing.T) {
 			assertGet(321)
 			assertMissing(0, all(330, 332))
 			assertLastConsecutive(329) // after adding a single missing packet, lastConsecutive should jump forward
+
+			add(all(330, 332)...)
+			assertMissing(0, []uint16{})
+			assertLastConsecutive(334)
+
+			// Add a packet beyond the current missing range to trigger buffer overflow behavior.
+			// Ensure that when the number of missing packets exceeds the buffer size,
+			// only the latest (rl.size - 1) entries are considered for NACKs.
+			add(466)
+			assertGet(466)
+
+			missing := all(335, 465)
+			if len(missing) > int(rl.size) {
+				assertLastConsecutive(missing[len(missing)-int(rl.size)])
+				assertMissing(0, missing[len(missing)-(int(rl.size-1)):])
+			} else {
+				assertMissing(0, all(335, 465))
+			}
 		})
 	}
 }

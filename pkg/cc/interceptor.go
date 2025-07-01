@@ -26,7 +26,7 @@ type BandwidthEstimator interface {
 	GetTargetBitrate() int
 	SetTargetBitrate(rate int)
 	OnTargetBitrateChange(f func(bitrate int))
-	GetStats() map[string]interface{}
+	GetStats() map[string]any
 	Close() error
 }
 

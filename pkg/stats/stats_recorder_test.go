@@ -46,7 +46,7 @@ func TestStatsRecorder(t *testing.T) {
 	}
 	type record struct {
 		ts      time.Time
-		content interface{}
+		content any
 	}
 	type input struct {
 		name string
@@ -864,9 +864,7 @@ func TestGetStatsNotBlocking(t *testing.T) {
 
 	<-ctx.Done()
 
-	if err := ctx.Err(); err != nil && errors.Is(err, context.DeadlineExceeded) {
-		t.Error("it shouldn't block")
-	}
+	assert.False(t, errors.Is(ctx.Err(), context.DeadlineExceeded), "it shouldn't block")
 }
 
 func TestQueueNotBlocking(t *testing.T) {
@@ -914,9 +912,7 @@ func TestQueueNotBlocking(t *testing.T) {
 
 			<-ctx.Done()
 
-			if err := ctx.Err(); err != nil && errors.Is(err, context.DeadlineExceeded) {
-				t.Error("it shouldn't block")
-			}
+			assert.False(t, errors.Is(ctx.Err(), context.DeadlineExceeded), "it shouldn't block")
 		})
 	}
 }

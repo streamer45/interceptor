@@ -7,8 +7,8 @@ package flexfec
 
 import (
 	"encoding/binary"
+	"sync"
 
-	"github.com/pion/interceptor/pkg/flexfec/util"
 	"github.com/pion/rtp"
 )
 
@@ -16,7 +16,18 @@ const (
 	// BaseFec03HeaderSize represents the minium FEC payload's header size including the
 	// required first mask.
 	BaseFec03HeaderSize = 20
+	// maxRTPPacketSize represents the maximum size of an RTP packet buffer.
+	// This is a reasonable upper bound for typical RTP packets.
+	maxRTPPacketSize = 1500
 )
+
+var bufferPool = sync.Pool{ //nolint:gochecknoglobals
+	New: func() any {
+		b := make([]byte, maxRTPPacketSize)
+
+		return &b
+	},
+}
 
 // FlexEncoder03 implements the Fec encoding mechanism for the "Flex" variant of FlexFec.
 type FlexEncoder03 struct {
@@ -26,7 +37,15 @@ type FlexEncoder03 struct {
 	coverage    *ProtectionCoverage
 }
 
-// NewFlexEncoder03 returns a new FlexFecEncoder.
+// FlexEncoder03Factory is a factory for FlexFEC-03 encoders.
+type FlexEncoder03Factory struct{}
+
+// NewEncoder creates new FlexFEC-03 encoder.
+func (f FlexEncoder03Factory) NewEncoder(payloadType uint8, ssrc uint32) FlexEncoder {
+	return NewFlexEncoder03(payloadType, ssrc)
+}
+
+// NewFlexEncoder03 creates new FlexFEC-03 encoder.
 func NewFlexEncoder03(payloadType uint8, ssrc uint32) *FlexEncoder03 {
 	return &FlexEncoder03{
 		payloadType: payloadType,
@@ -36,9 +55,21 @@ func NewFlexEncoder03(payloadType uint8, ssrc uint32) *FlexEncoder03 {
 }
 
 // EncodeFec returns a list of generated RTP packets with FEC payloads that protect the specified mediaPackets.
-// This method does not account for missing RTP packets in the mediaPackets array nor does it account for
-// them being passed out of order.
+// This method returns nil in case of missing RTP packets in the mediaPackets array or packets passed out of order.
 func (flex *FlexEncoder03) EncodeFec(mediaPackets []rtp.Packet, numFecPackets uint32) []rtp.Packet {
+	// Check if mediaPackets is empty
+	if len(mediaPackets) == 0 {
+		return nil
+	}
+
+	// Check if RTP packets are in order by comparing sequence numbers
+	for i := 1; i < len(mediaPackets); i++ {
+		if mediaPackets[i].SequenceNumber != mediaPackets[i-1].SequenceNumber+1 {
+			// Packets are not in order or there are missing packets
+			return nil
+		}
+	}
+
 	// Start by defining which FEC packets cover which media packets
 	if flex.coverage == nil {
 		flex.coverage = NewCoverage(mediaPackets, numFecPackets)
@@ -51,52 +82,26 @@ func (flex *FlexEncoder03) EncodeFec(mediaPackets []rtp.Packet, numFecPackets ui
 	}
 
 	// Generate FEC payloads
-	fecPackets := make([]rtp.Packet, numFecPackets)
+	fecPackets := make([]rtp.Packet, 0, numFecPackets)
 	for fecPacketIndex := uint32(0); fecPacketIndex < numFecPackets; fecPacketIndex++ {
-		fecPackets[fecPacketIndex] = flex.encodeFlexFecPacket(fecPacketIndex, mediaPackets[0].SequenceNumber)
+		fecPacket, ok := flex.encodeFlexFecPacket(fecPacketIndex, mediaPackets[0].SequenceNumber)
+		if ok {
+			fecPackets = append(fecPackets, fecPacket)
+		}
 	}
 
 	return fecPackets
 }
 
-func (flex *FlexEncoder03) encodeFlexFecPacket(fecPacketIndex uint32, mediaBaseSn uint16) rtp.Packet {
-	mediaPacketsIt := flex.coverage.GetCoveredBy(fecPacketIndex)
-	flexFecHeader := flex.encodeFlexFecHeader(
-		mediaPacketsIt,
-		flex.coverage.ExtractMask1(fecPacketIndex),
-		flex.coverage.ExtractMask2(fecPacketIndex),
-		flex.coverage.ExtractMask3_03(fecPacketIndex),
-		mediaBaseSn,
-	)
-	flexFecRepairPayload := flex.encodeFlexFecRepairPayload(mediaPacketsIt.Reset())
+//nolint:cyclop
+func (flex *FlexEncoder03) encodeFlexFecPacket(fecPacketIndex uint32, mediaBaseSn uint16) (rtp.Packet, bool) {
+	mediaPackets := flex.coverage.GetCoveredBy(fecPacketIndex)
+	mask1 := flex.coverage.ExtractMask1(fecPacketIndex)
+	optionalMask2 := flex.coverage.ExtractMask2(fecPacketIndex)
+	optionalMask3 := flex.coverage.ExtractMask3_03(fecPacketIndex)
 
-	packet := rtp.Packet{
-		Header: rtp.Header{
-			Version:        2,
-			Padding:        false,
-			Extension:      false,
-			Marker:         false,
-			PayloadType:    flex.payloadType,
-			SequenceNumber: flex.fecBaseSn,
-			Timestamp:      54243243,
-			SSRC:           flex.ssrc,
-			CSRC:           []uint32{},
-		},
-		Payload: append(flexFecHeader, flexFecRepairPayload...),
-	}
-	flex.fecBaseSn++
-
-	return packet
-}
-
-func (flex *FlexEncoder03) encodeFlexFecHeader(
-	mediaPackets *util.MediaPacketIterator,
-	mask1 uint16,
-	optionalMask2 uint32,
-	optionalMask3 uint64,
-	mediaBaseSn uint16,
-) []byte {
 	/*
+	    FlexFEC Header Format:
 	    0                   1                   2                   3
 	    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 	   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -120,32 +125,46 @@ func (flex *FlexEncoder03) encodeFlexFecHeader(
 	   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 	*/
 
+	if !mediaPackets.HasNext() {
+		return rtp.Packet{}, false
+	}
+
 	// Get header size - This depends on the size of the bitmask.
 	headerSize := BaseFec03HeaderSize
-	if optionalMask2 > 0 {
+	if optionalMask2 > 0 || optionalMask3 > 0 {
 		headerSize += 4
 	}
 	if optionalMask3 > 0 {
 		headerSize += 8
 	}
 
-	// Allocate the FlexFec header
-	flexFecHeader := make([]byte, headerSize)
+	// Find the maximum payload size among all media packets
+	maxPayloadSize := 0
+	for mediaPackets.HasNext() {
+		maxPayloadSize = maxInt(maxPayloadSize, mediaPackets.Next().MarshalSize()-BaseRTPHeaderSize)
+	}
+	mediaPackets.Reset()
 
-	// We allocate a single temporary buffer to store the mediaPacket bytes. This reduces
-	// overall allocations.
-	tmpMediaPacketBuf := make([]byte, 0)
+	flexFecPayload := make([]byte, headerSize+maxPayloadSize)
+
+	flexFecHeader := flexFecPayload[:headerSize]
+	flexFecRepairPayload := flexFecPayload[headerSize : headerSize+maxPayloadSize]
+
+	bufferFromPool := bufferPool.Get().(*[]byte) //nolint:forcetypeassert
+	defer bufferPool.Put(bufferFromPool)
+	tmpMediaPacketBuf := *bufferFromPool
+
 	for mediaPackets.HasNext() {
 		mediaPacket := mediaPackets.Next()
-
-		if mediaPacket.MarshalSize() > len(tmpMediaPacketBuf) {
-			// The temporary buffer is too small, we need to resize.
-			tmpMediaPacketBuf = make([]byte, mediaPacket.MarshalSize())
+		packetSize := mediaPacket.MarshalSize()
+		if packetSize > len(tmpMediaPacketBuf) {
+			// Packet is too large for our fixed buffer, fallback to dynamic allocation
+			tmpMediaPacketBuf = make([]byte, packetSize)
 		}
-		n, err := mediaPacket.MarshalTo(tmpMediaPacketBuf)
 
+		n, err := mediaPacket.MarshalTo(tmpMediaPacketBuf[:packetSize])
 		if n == 0 || err != nil {
-			return nil
+			return rtp.Packet{}, false
 		}
 
 		// XOR the first 2 bytes of the header: V, P, X, CC, M, PT fields
@@ -165,6 +184,11 @@ func (flex *FlexEncoder03) encodeFlexFecHeader(
 		flexFecHeader[5] ^= tmpMediaPacketBuf[5]
 		flexFecHeader[6] ^= tmpMediaPacketBuf[6]
 		flexFecHeader[7] ^= tmpMediaPacketBuf[7]
+
+		// Process FlexFEC Repair Payload (bytes after RTP header)
+		for byteIndex := 0; byteIndex < packetSize-BaseRTPHeaderSize; byteIndex++ {
+			flexFecRepairPayload[byteIndex] ^= tmpMediaPacketBuf[byteIndex+BaseRTPHeaderSize]
+		}
 	}
 
 	// Write the SSRC count
@@ -184,39 +208,42 @@ func (flex *FlexEncoder03) encodeFlexFecHeader(
 	// Write the bitmasks to the header
 	binary.BigEndian.PutUint16(flexFecHeader[18:20], mask1)
 
-	if optionalMask2 == 0 {
+	if optionalMask2 == 0 && optionalMask3 == 0 {
 		flexFecHeader[18] |= 0b10000000
-
-		return flexFecHeader
-	}
-	binary.BigEndian.PutUint32(flexFecHeader[20:24], optionalMask2)
-
-	if optionalMask3 == 0 {
-		flexFecHeader[20] |= 0b10000000
 	} else {
-		binary.BigEndian.PutUint64(flexFecHeader[24:32], optionalMask3)
+		binary.BigEndian.PutUint32(flexFecHeader[20:24], optionalMask2)
+
+		if optionalMask3 == 0 {
+			flexFecHeader[20] |= 0b10000000
+		} else {
+			binary.BigEndian.PutUint64(flexFecHeader[24:32], optionalMask3)
+			flexFecHeader[24] |= 0b10000000
+		}
 	}
 
-	return flexFecHeader
+	packet := rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			Padding:        false,
+			Extension:      false,
+			Marker:         false,
+			PayloadType:    flex.payloadType,
+			SequenceNumber: flex.fecBaseSn,
+			Timestamp:      54243243,
+			SSRC:           flex.ssrc,
+			CSRC:           []uint32{},
+		},
+		Payload: flexFecPayload,
+	}
+	flex.fecBaseSn++
+
+	return packet, true
 }
 
-func (flex *FlexEncoder03) encodeFlexFecRepairPayload(mediaPackets *util.MediaPacketIterator) []byte {
-	flexFecPayload := make([]byte, len(mediaPackets.First().Payload))
-
-	for mediaPackets.HasNext() {
-		mediaPacketPayload := mediaPackets.Next().Payload
-
-		if len(flexFecPayload) < len(mediaPacketPayload) {
-			// Expected FEC packet payload is bigger that what we can currently store,
-			// we need to resize.
-			flexFecPayloadTmp := make([]byte, len(mediaPacketPayload))
-			copy(flexFecPayloadTmp, flexFecPayload)
-			flexFecPayload = flexFecPayloadTmp
-		}
-		for byteIndex := 0; byteIndex < len(mediaPacketPayload); byteIndex++ {
-			flexFecPayload[byteIndex] ^= mediaPacketPayload[byteIndex]
-		}
+func maxInt(a, b int) int {
+	if a > b {
+		return a
 	}
 
-	return flexFecPayload
+	return b
 }
